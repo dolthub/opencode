@@ -17,4 +17,15 @@ if (process.versions.bun !== expectedBunVersion) {
   console.warn(`Warning: Bun version ${process.versions.bun} differs from expected ${expectedBunVersion}`);
 }
 '
+# On Apple Silicon macs where `node` is x86 via Rosetta, bin scripts that use
+# #!/usr/bin/env node (turbo, tsgo, etc.) detect the wrong platform and look
+# for x64 packages that aren't installed. Shim `node` with bun so those scripts
+# run under the native arm64 runtime instead.
+if [ "$(uname -m)" = "arm64" ] && [ "$(node -e 'process.stdout.write(process.arch)')" != "arm64" ] 2>/dev/null; then
+  _shim_dir="$(mktemp -d)"
+  printf '#!/bin/sh\nexec /opt/homebrew/bin/bun "$@"\n' > "$_shim_dir/node"
+  chmod +x "$_shim_dir/node"
+  export PATH="$_shim_dir:$PATH"
+  trap 'rm -rf "$_shim_dir"' EXIT
+fi
 bun typecheck

@@ -6,6 +6,9 @@ import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
 import nextProjectors from "./projectors-next"
+import * as Log from "@opencode-ai/core/util/log"
+
+const log = Log.create({ service: "projectors" })
 
 function foreign(err: unknown) {
   if (typeof err !== "object" || err === null) return false
