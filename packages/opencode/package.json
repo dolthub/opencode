@@ -24,9 +24,9 @@
   },
   "imports": {
     "#db": {
-      "bun": "./src/storage/db.bun.ts",
-      "node": "./src/storage/db.node.ts",
-      "default": "./src/storage/db.bun.ts"
+      "bun": "./src/storage/db.doltlite.bun.ts",
+      "node": "./src/storage/db.doltlite.node.ts",
+      "default": "./src/storage/db.doltlite.bun.ts"
     },
     "#pty": {
       "bun": "./src/pty/pty.bun.ts",
@@ -140,6 +140,7 @@
     "cli-sound": "1.1.3",
     "clipboardy": "4.0.0",
     "cross-spawn": "catalog:",
+    "@dolthub/doltlite": "workspace:../doltlite",
     "decimal.js": "10.5.0",
     "diff": "catalog:",
     "drizzle-orm": "catalog:",

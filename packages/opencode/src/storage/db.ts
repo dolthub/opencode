@@ -1,5 +1,4 @@
-import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
+import { type BaseSQLiteDatabase } from "drizzle-orm/sqlite-core"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 export * from "drizzle-orm"
 import { LocalContext } from "@/util/local-context"
@@ -29,9 +28,9 @@ const log = Log.create({ service: "db" })
 
 export function getChannelPath() {
   if (["latest", "beta", "prod"].includes(InstallationChannel) || Flag.OPENCODE_DISABLE_CHANNEL_DB)
-    return path.join(Global.Path.data, "opencode.db")
+    return path.join(Global.Path.data, "opencode.ddb")
   const safe = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
-  return path.join(Global.Path.data, `opencode-${safe}.db`)
+  return path.join(Global.Path.data, `opencode-${safe}.ddb`)
 }
 
 export const Path = iife(() => {
@@ -44,15 +43,22 @@ export const Path = iife(() => {
 
 export type Transaction = SQLiteTransaction<"sync", void>
 
-type Client = SQLiteBunDatabase
+type Client = BaseSQLiteDatabase<"sync", void>
 
 type Journal = { sql: string; timestamp: number; name: string }[]
 
-// Drizzle's migrate overloads trigger expensive variance checks here; narrow to the journal overload we actually use.
-const migrateFromJournal = migrate as unknown as (db: SQLiteBunDatabase, entries: Journal) => void
-
-function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
-  migrateFromJournal(db, entries)
+function applyMigrations(db: Client, entries: Journal) {
+  // Build the MigrationMeta array that SQLiteSyncDialect.migrate() expects,
+  // splitting on the statement-breakpoint marker the same way the bun-sqlite
+  // migrator does internally.
+  const metas = entries.map((d) => ({
+    sql: d.sql.split("--> statement-breakpoint"),
+    folderMillis: d.timestamp,
+    hash: "",
+    bps: true,
+    name: d.name,
+  }))
+  ;(db as any).dialect.migrate(metas, (db as any).session, {})
 }
 
 function time(tag: string) {

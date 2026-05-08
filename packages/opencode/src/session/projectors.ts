@@ -5,10 +5,7 @@ import { SyncEvent } from "@/sync"
 import * as Session from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
-import { Log } from "@opencode-ai/core/util/log"
 import nextProjectors from "./projectors-next"
-
-const log = Log.create({ service: "session.projector" })
 
 function foreign(err: unknown) {
   if (typeof err !== "object" || err === null) return false
@@ -66,9 +63,8 @@ export function toPartialRow(info: DeepPartial<Session.Info>) {
 
 export default [
   SyncEvent.project(Session.Event.Created, (db, data) => {
-    db.insert(SessionTable)
-      .values(Session.toRow(data.info as Session.Info))
-      .run()
+    const row = Session.toRow(data.info as Session.Info)
+    db.insert(SessionTable).values(row).run()
   }),
 
   SyncEvent.project(Session.Event.Updated, (db, data) => {

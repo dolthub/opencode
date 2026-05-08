@@ -172,8 +172,10 @@ export const layer: Layer.Layer<
           Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
         )
         if (matches.length) yield* config.waitForDependencies()
+        const cfg = yield* config.get()
         for (const match of matches) {
           const namespace = path.basename(match, path.extname(match))
+          if (cfg.tools?.[namespace] === false) continue
           // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
           // Import it as `file://` so Node on Windows accepts the dynamic import.
           const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
@@ -189,7 +191,6 @@ export const layer: Layer.Layer<
           }
         }
 
-        yield* config.get()
         const questionEnabled =
           ["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) || Flag.OPENCODE_ENABLE_QUESTION_TOOL
 

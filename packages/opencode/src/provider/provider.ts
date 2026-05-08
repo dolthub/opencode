@@ -1700,7 +1700,8 @@ const layer: Layer.Layer<
         return { providerID: entry.providerID, modelID: entry.modelID }
       }
 
-      const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
+      const providerFilter = cfg.provider && Object.keys(cfg.provider).length > 0 ? Object.keys(cfg.provider) : null
+      const provider = Object.values(s.providers).find((p) => !providerFilter || providerFilter.includes(p.id))
       if (!provider) throw new Error("no providers found")
       const [model] = sort(Object.values(provider.models))
       if (!model) throw new Error("no models found")

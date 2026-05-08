@@ -30,8 +30,6 @@ import { WebCommand } from "./cli/cmd/web"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
-import path from "path"
-import { Global } from "@opencode-ai/core/global"
 import { JsonMigration } from "@/storage/json-migration"
 import { Database } from "@/storage/db"
 import { errorMessage } from "./util/error"
@@ -115,7 +113,9 @@ const cli = yargs(args)
       run_id: processMetadata.runID,
     })
 
-    const marker = path.join(Global.Path.data, "opencode.db")
+    // Use the actual DB path as the migration sentinel: if the DB file already
+    // exists this is not a first run and there is nothing to migrate.
+    const marker = Database.Path
     if (!(await Filesystem.exists(marker))) {
       const tty = process.stderr.isTTY
       process.stderr.write("Performing one time database migration, may take a few minutes..." + EOL)
@@ -148,6 +148,8 @@ const cli = yargs(args)
         else {
           process.stderr.write(`sqlite-migration:done${EOL}`)
         }
+        // Release the main-thread DB connection so only the Worker thread holds one.
+        Database.close()
       }
       process.stderr.write("Database migration complete." + EOL)
     }
@@ -217,6 +219,13 @@ try {
       cause: e.cause?.toString(),
       stack: e.stack,
     })
+    if ("errors" in e && Array.isArray(e.errors)) {
+      Object.assign(data, {
+        errors: e.errors.map((err: unknown) =>
+          err instanceof Error ? { message: err.message, stack: err.stack } : String(err),
+        ),
+      })
+    }
   }
 
   if (e instanceof ResolveMessage) {
