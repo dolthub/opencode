@@ -1,5 +1,4 @@
-import type { SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import type { NodeSQLiteDatabase } from "drizzle-orm/node-sqlite"
+import type { DB } from "./db.adapter"
 import { Global } from "@opencode-ai/core/global"
 import * as Log from "@opencode-ai/core/util/log"
 import { ProjectTable } from "../project/project.sql"
@@ -22,7 +21,7 @@ type Options = {
   progress?: (event: Progress) => void
 }
 
-export async function run(db: SQLiteBunDatabase<any, any> | NodeSQLiteDatabase<any, any>, options?: Options) {
+export async function run(db: DB, options?: Options) {
   const storageDir = path.join(Global.Path.data, "storage")
 
   if (!existsSync(storageDir)) {

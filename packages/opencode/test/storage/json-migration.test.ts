@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
-import { drizzle, SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
+import { drizzle } from "drizzle-orm/bun-sqlite"
+import type { DB } from "@/storage/db.adapter"
 import { migrate } from "drizzle-orm/bun-sqlite/migrator"
 import path from "path"
 import fs from "fs/promises"
@@ -99,7 +100,7 @@ function createTestDb() {
 describe("JSON to SQLite migration", () => {
   let storageDir: string
   let sqlite: Database
-  let db: SQLiteBunDatabase
+  let db: DB
 
   beforeEach(async () => {
     storageDir = await setupStorageDir()

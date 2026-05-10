@@ -7,6 +7,7 @@ import { Server } from "../../src/server/server"
 import { ExperimentalPaths } from "../../src/server/routes/instance/httpapi/groups/experimental"
 import { Session } from "@/session/session"
 import { Database } from "@/storage/db"
+import { AccountTable } from "@/account/account.sql"
 import * as Log from "@opencode-ai/core/util/log"
 import { Worktree } from "../../src/worktree"
 import { resetDatabase } from "../fixture/db"
@@ -100,19 +101,20 @@ describe("experimental HttpApi", () => {
 
   test("serves Console org switch through Hono bridge", async () => {
     await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
-    Database.Client()
-      .$client.prepare(
-        "INSERT INTO account (id, email, url, access_token, refresh_token, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        "account-test",
-        "test@example.com",
-        "https://console.example.com",
-        "access",
-        "refresh",
-        Date.now(),
-        Date.now(),
-      )
+    Database.use((db) =>
+      db
+        .insert(AccountTable)
+        .values({
+          id: "account-test",
+          email: "test@example.com",
+          url: "https://console.example.com",
+          access_token: "access",
+          refresh_token: "refresh",
+          time_created: Date.now(),
+          time_updated: Date.now(),
+        } as any)
+        .run(),
+    )
 
     const switched = await app().request(ExperimentalPaths.consoleSwitch, {
       method: "POST",

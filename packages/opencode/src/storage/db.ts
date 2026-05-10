@@ -1,5 +1,3 @@
-import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
-import { migrate } from "drizzle-orm/bun-sqlite/migrator"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 export * from "drizzle-orm"
 import { LocalContext } from "@/util/local-context"
@@ -15,8 +13,10 @@ import { InstallationChannel } from "@opencode-ai/core/installation/version"
 import { InstanceState } from "@/effect/instance-state"
 import { iife } from "@/util/iife"
 import { init } from "#db"
+import type { DB, Journal, StorageAdapter } from "./db.adapter"
+export type { DB, StorageAdapter }
 
-declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number; name: string }[] | undefined
+declare const OPENCODE_MIGRATIONS: Journal | undefined
 
 export const NotFoundError = NamedError.create(
   "NotFoundError",
@@ -43,17 +43,7 @@ export const Path = iife(() => {
 })
 
 export type Transaction = SQLiteTransaction<"sync", void>
-
-type Client = SQLiteBunDatabase
-
-type Journal = { sql: string; timestamp: number; name: string }[]
-
-// Drizzle's migrate overloads trigger expensive variance checks here; narrow to the journal overload we actually use.
-const migrateFromJournal = migrate as unknown as (db: SQLiteBunDatabase, entries: Journal) => void
-
-function applyMigrations(db: SQLiteBunDatabase, entries: Journal) {
-  migrateFromJournal(db, entries)
-}
+export type TxOrDb = DB
 
 function time(tag: string) {
   const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(tag)
@@ -88,10 +78,11 @@ function migrations(dir: string): Journal {
   return sql.sort((a, b) => a.timestamp - b.timestamp)
 }
 
-export const Client = lazy(() => {
+const Adapter = lazy((): StorageAdapter => {
   log.info("opening database", { path: Path })
 
-  const db = init(Path)
+  const adapter = init(Path)
+  const { db } = adapter
 
   db.run("PRAGMA journal_mode = WAL")
   db.run("PRAGMA synchronous = NORMAL")
@@ -100,7 +91,6 @@ export const Client = lazy(() => {
   db.run("PRAGMA foreign_keys = ON")
   db.run("PRAGMA wal_checkpoint(PASSIVE)")
 
-  // Apply schema migrations
   const entries =
     typeof OPENCODE_MIGRATIONS !== "undefined"
       ? OPENCODE_MIGRATIONS
@@ -115,19 +105,25 @@ export const Client = lazy(() => {
         item.sql = "select 1;"
       }
     }
-    applyMigrations(db, entries)
+    adapter.migrate(entries)
   }
 
-  return db
+  return adapter
 })
 
-export function close() {
-  if (!Client.loaded()) return
-  Client().$client.close()
-  Client.reset()
-}
+export const Client = Object.assign(
+  (): DB => Adapter().db,
+  {
+    loaded: () => Adapter.loaded(),
+    reset: () => Adapter.reset(),
+  },
+)
 
-export type TxOrDb = Transaction | Client
+export function close() {
+  if (!Adapter.loaded()) return
+  Adapter().close()
+  Adapter.reset()
+}
 
 const ctx = LocalContext.create<{
   tx: TxOrDb
