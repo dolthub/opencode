@@ -694,11 +694,11 @@ const part = (row: typeof PartTable.$inferSelect) =>
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
-function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
+async function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
   const partByMessage = new Map<string, Part[]>()
   if (ids.length > 0) {
-    const partRows = Database.use((db) =>
+    const partRows = await Database.useAsync((db) =>
       db
         .select()
         .from(PartTable)
@@ -999,12 +999,12 @@ export function toModelMessages(
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }
 
-export function page(input: { sessionID: SessionID; limit: number; before?: string }) {
+export async function page(input: { sessionID: SessionID; limit: number; before?: string }) {
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
     : eq(MessageTable.session_id, input.sessionID)
-  const rows = Database.use((db) =>
+  const rows = await Database.useAsync((db) =>
     db
       .select()
       .from(MessageTable)
@@ -1014,7 +1014,7 @@ export function page(input: { sessionID: SessionID; limit: number; before?: stri
       .all(),
   )
   if (rows.length === 0) {
-    const row = Database.use((db) =>
+    const row = await Database.useAsync((db) =>
       db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get(),
     )
     if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
@@ -1026,7 +1026,7 @@ export function page(input: { sessionID: SessionID; limit: number; before?: stri
 
   const more = rows.length > input.limit
   const slice = more ? rows.slice(0, input.limit) : rows
-  const items = hydrate(slice)
+  const items = await hydrate(slice)
   items.reverse()
   const tail = slice.at(-1)
   return {
@@ -1036,11 +1036,11 @@ export function page(input: { sessionID: SessionID; limit: number; before?: stri
   }
 }
 
-export function* stream(sessionID: SessionID) {
+export async function* stream(sessionID: SessionID) {
   const size = 50
   let before: string | undefined
   while (true) {
-    const next = page({ sessionID, limit: size, before })
+    const next = await page({ sessionID, limit: size, before })
     if (next.items.length === 0) break
     for (let i = next.items.length - 1; i >= 0; i--) {
       yield next.items[i]
@@ -1050,8 +1050,8 @@ export function* stream(sessionID: SessionID) {
   }
 }
 
-export function parts(message_id: MessageID) {
-  const rows = Database.use((db) =>
+export async function parts(message_id: MessageID) {
+  const rows = await Database.useAsync((db) =>
     db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
   )
   return rows.map(
@@ -1065,8 +1065,8 @@ export function parts(message_id: MessageID) {
   )
 }
 
-export function get(input: { sessionID: SessionID; messageID: MessageID }): WithParts {
-  const row = Database.use((db) =>
+export async function get(input: { sessionID: SessionID; messageID: MessageID }): Promise<WithParts> {
+  const row = await Database.useAsync((db) =>
     db
       .select()
       .from(MessageTable)
@@ -1076,7 +1076,7 @@ export function get(input: { sessionID: SessionID; messageID: MessageID }): With
   if (!row) throw new NotFoundError({ message: `Message not found: ${input.messageID}` })
   return {
     info: info(row),
-    parts: parts(input.messageID),
+    parts: await parts(input.messageID),
   }
 }
 
@@ -1134,7 +1134,13 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(stream(sessionID))
+  return yield* Effect.promise(async () => {
+    const items: WithParts[] = []
+    for await (const item of stream(sessionID)) {
+      items.push(item)
+    }
+    return filterCompacted(items)
+  })
 })
 
 export function fromError(

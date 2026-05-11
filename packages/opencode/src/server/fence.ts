@@ -7,9 +7,9 @@ const log = Log.create({ service: "fence-middleware" })
 export const FenceMiddleware: MiddlewareHandler = async (c, next) => {
   if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") return next()
 
-  const prev = load()
+  const prev = await load()
   await next()
-  const current = diff(prev, load())
+  const current = diff(prev, await load())
 
   if (Object.keys(current).length > 0) {
     log.info("header", {

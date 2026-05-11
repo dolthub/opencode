@@ -46,7 +46,7 @@ export type Properties<Def extends Definition = Definition> = EffectSchema.Schem
 
 export type SerializedEvent<Def extends Definition = Definition> = Event<Def> & { type: string }
 
-type ProjectorFunc = (db: Database.TxOrDb, data: unknown, event: Event) => void
+type ProjectorFunc = (db: Database.AnyDB, data: unknown, event: Event) => void | Promise<void>
 type ConvertEvent = (type: string, data: Event["data"]) => unknown | Promise<unknown>
 type PublishContext = {
   instance?: InstanceContext
@@ -77,7 +77,7 @@ export const layer = Layer.effect(Service)(
         throw new Error(`Unknown event type: ${event.type}`)
       }
 
-      const row = Database.use((db) =>
+      const row = yield* Database.useEffect((db) =>
         db
           .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
           .from(EventSequenceTable)
@@ -148,33 +148,50 @@ export const layer = Layer.effect(Service)(
           }
         : undefined
 
-      // Note that this is an "immediate" transaction which is critical.
-      // We need to make sure we can safely read and write with nothing
-      // else changing the data from under us
-      Database.transaction(
-        (tx) => {
+      if (Database.isAsync) {
+        yield* Effect.promise(() => {
           const id = EventID.ascending()
-          const row = tx
-            .select({ seq: EventSequenceTable.seq })
-            .from(EventSequenceTable)
-            .where(eq(EventSequenceTable.aggregate_id, agg))
-            .get()
-          const seq = row?.seq != null ? row.seq + 1 : 0
+          const event = { id, seq: 0, aggregateID: agg, data }
+          return processAsync(def, event, { publish, context })
+        })
+      } else {
+        // Note that this is an "immediate" transaction which is critical.
+        // We need to make sure we can safely read and write with nothing
+        // else changing the data from under us
+        Database.transaction(
+          (tx) => {
+            const id = EventID.ascending()
+            const row = tx
+              .select({ seq: EventSequenceTable.seq })
+              .from(EventSequenceTable)
+              .where(eq(EventSequenceTable.aggregate_id, agg))
+              .get()
+            const seq = row?.seq != null ? row.seq + 1 : 0
 
-          const event = { id, seq, aggregateID: agg, data }
-          process(def, event, { publish, context })
-        },
-        {
-          behavior: "immediate",
-        },
-      )
+            const event = { id, seq, aggregateID: agg, data }
+            process(def, event, { publish, context })
+          },
+          {
+            behavior: "immediate",
+          },
+        )
+      }
     })
 
     const remove: Interface["remove"] = Effect.fn("SyncEvent.remove")(function* (aggregateID) {
-      Database.transaction((tx) => {
-        tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).run()
-        tx.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).run()
-      })
+      if (Database.isAsync) {
+        yield* Database.useEffect((db) =>
+          db.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).run(),
+        )
+        yield* Database.useEffect((db) =>
+          db.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).run(),
+        )
+      } else {
+        Database.transaction((tx) => {
+          tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).run()
+          tx.delete(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).run()
+        })
+      }
     })
 
     return Service.of({
@@ -262,7 +279,7 @@ export function define<
 
 export function project<Def extends Definition>(
   def: Def,
-  func: (db: Database.TxOrDb, data: Event<Def>["data"], event: Event<Def>) => void,
+  func: (db: Database.AnyDB, data: Event<Def>["data"], event: Event<Def>) => void | Promise<void>,
 ): [Definition, ProjectorFunc] {
   return [def, func as ProjectorFunc]
 }
@@ -338,6 +355,82 @@ function process<Def extends Definition>(
   })
 }
 
+async function processAsync<Def extends Definition>(
+  def: Def,
+  event: Event<Def>,
+  options: { publish: boolean; context?: PublishContext; ownerID?: string },
+) {
+  if (projectors == null) {
+    throw new Error("No projectors available. Call `SyncEvent.init` to install projectors")
+  }
+
+  const projector = projectors.get(def)
+  if (!projector) {
+    throw new Error(`Projector not found for event: ${def.type}`)
+  }
+
+  // Bind the publish callback before the first await so that when it runs
+  // after the DB write completes, the instance ALS context is restored.
+  // This mirrors what Database.effect() does in the synchronous (SQLite) path.
+  const boundPublish =
+    options.publish && options.context?.instance
+      ? InstanceState.bind((data: unknown) =>
+          ProjectBus.publish(def, data as Properties<Def>, { id: event.id }),
+        )
+      : null
+
+  await Database.useAsync(async (db) => {
+    await projector(db, event.data, event)
+
+    if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+      await db
+        .insert(EventSequenceTable)
+        .values({
+          aggregate_id: event.aggregateID,
+          seq: event.seq,
+          owner_id: options?.ownerID,
+        })
+        .onConflictDoUpdate({
+          target: EventSequenceTable.aggregate_id,
+          set: { seq: event.seq },
+        })
+        .run()
+      await db
+        .insert(EventTable)
+        .values({
+          id: event.id,
+          seq: event.seq,
+          aggregate_id: event.aggregateID,
+          type: versionedType(def.type, def.version),
+          data: event.data as Record<string, unknown>,
+        })
+        .run()
+    }
+  })
+
+  if (boundPublish && options.context?.instance) {
+    const result = convertEvent(def.type, event.data)
+    if (result instanceof Promise) {
+      void result.then(boundPublish)
+    } else {
+      void boundPublish(result)
+    }
+
+    GlobalBus.emit("event", {
+      directory: options.context.instance.directory,
+      project: options.context.instance.project.id,
+      workspace: options.context.workspace,
+      payload: {
+        type: "sync",
+        syncEvent: {
+          type: versionedType(def.type, def.version),
+          ...event,
+        },
+      },
+    })
+  }
+}
+
 export function replay(event: SerializedEvent, options?: { publish: boolean; ownerID?: string }) {
   return runtime.runSync((sync) => sync.replay(event, options))
 }
@@ -354,8 +447,8 @@ export function remove(aggregateID: string) {
   return runtime.runSync((sync) => sync.remove(aggregateID))
 }
 
-export function claim(aggregateID: string, ownerID: string) {
-  Database.use((db) =>
+export async function claim(aggregateID: string, ownerID: string) {
+  await Database.useAsync((db) =>
     db
       .update(EventSequenceTable)
       .set({ owner_id: ownerID })

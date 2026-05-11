@@ -11,8 +11,8 @@ export const HEADER = "x-opencode-sync"
 export type State = Record<string, number>
 const log = Log.create({ service: "fence" })
 
-export function load(ids?: string[]) {
-  const rows = Database.use((db) => {
+export async function load(ids?: string[]) {
+  const rows = await Database.useAsync((db) => {
     if (!ids?.length) {
       return db.select().from(EventSequenceTable).all()
     }

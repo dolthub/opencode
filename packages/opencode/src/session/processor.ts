@@ -347,7 +347,7 @@ export const layer: Layer.Layer<
                 : value.providerMetadata,
             }))
 
-            const parts = MessageV2.parts(ctx.assistantMessage.id)
+            const parts = yield* Effect.promise(() => MessageV2.parts(ctx.assistantMessage.id))
             const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
 
             if (

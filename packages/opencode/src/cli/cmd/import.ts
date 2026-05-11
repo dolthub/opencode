@@ -170,7 +170,7 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
     projectID,
   }) as Session.Info
   const row = Session.toRow(info)
-  Database.use((db) =>
+  yield* Database.useEffect((db) =>
     db
       .insert(SessionTable)
       .values(row)
@@ -181,7 +181,7 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
   for (const msg of exportData.messages) {
     const msgInfo = decodeMessageInfo(msg.info) as MessageV2.Info
     const { id, sessionID: _, ...msgData } = msgInfo
-    Database.use((db) =>
+    yield* Database.useEffect((db) =>
       db
         .insert(MessageTable)
         .values({
@@ -197,7 +197,7 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, projectI
     for (const part of msg.parts) {
       const partInfo = decodePart(part) as MessageV2.Part
       const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
-      Database.use((db) =>
+      yield* Database.useEffect((db) =>
         db
           .insert(PartTable)
           .values({

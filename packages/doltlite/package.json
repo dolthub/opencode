@@ -1,0 +1,43 @@
+{
+  "name": "@dolthub/doltlite",
+  "version": "0.10.0",
+  "description": "Node.js bindings for DoltLite — a SQLite fork with Git-style version control",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "type": "commonjs",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "lib/",
+    "src/",
+    "binding.gyp",
+    "scripts/",
+    "amalgamation/"
+  ],
+  "scripts": {
+    "install": "node scripts/download.js || node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "build:debug": "node-gyp rebuild --debug",
+    "test": "bun test test/",
+    "test:watch": "bun test --watch test/"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "binary": {
+    "module_name": "doltlite",
+    "module_path": "./build/Release"
+  },
+  "keywords": ["sqlite", "dolt", "doltlite", "database", "version-control", "sql"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dolthub/doltlite"
+  }
+}

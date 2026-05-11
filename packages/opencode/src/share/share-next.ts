@@ -76,8 +76,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ShareNext") {}
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Database.AnyDB) => T | Promise<T>) => Database.useEffect(fn)
 
 function api(resource: string): Api {
   return {
@@ -272,7 +271,13 @@ export const layer = Layer.effect(
       log.info("full sync", { sessionID })
       const info = yield* session.get(sessionID)
       const diffs = yield* session.diff(sessionID)
-      const messages = yield* Effect.sync(() => Array.from(MessageV2.stream(sessionID)))
+      const messages = yield* Effect.promise(async () => {
+        const items: MessageV2.WithParts[] = []
+        for await (const item of MessageV2.stream(sessionID)) {
+          items.push(item)
+        }
+        return items
+      })
       const models = yield* Effect.forEach(
         Array.from(
           new Map(

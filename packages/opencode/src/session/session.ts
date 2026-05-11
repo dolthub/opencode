@@ -477,8 +477,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 export type Patch = Types.DeepMutable<SyncEvent.Event<typeof Event.Updated>["data"]["info"]>
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Database.AnyDB) => T | Promise<T>) => Database.useEffect(fn)
 
 export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | SyncEvent.Service> = Layer.effect(
   Service,
@@ -541,7 +540,29 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
 
     const list = Effect.fn("Session.list")(function* (input?: ListInput) {
       const ctx = yield* InstanceState.context
-      return Array.from(listByProject({ projectID: ctx.project.id, ...input }))
+      const combined: ListInput & { projectID: ProjectID } = { projectID: ctx.project.id, ...input }
+      const conditions = [eq(SessionTable.project_id, combined.projectID)]
+      if (combined.workspaceID) conditions.push(eq(SessionTable.workspace_id, combined.workspaceID))
+      if (combined.path !== undefined) {
+        if (combined.path) {
+          const conds = [eq(SessionTable.path, combined.path), like(SessionTable.path, `${combined.path}/%`)]
+          conditions.push(
+            combined.directory
+              ? or(...conds, and(isNull(SessionTable.path), eq(SessionTable.directory, combined.directory))!)!
+              : or(...conds)!,
+          )
+        }
+      } else if (combined.scope !== "project" && !Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+        if (combined.directory) conditions.push(eq(SessionTable.directory, combined.directory))
+      }
+      if (combined.roots) conditions.push(isNull(SessionTable.parent_id))
+      if (combined.start) conditions.push(gte(SessionTable.time_updated, combined.start))
+      if (combined.search) conditions.push(like(SessionTable.title, `%${combined.search}%`))
+      const limit = combined.limit ?? 100
+      const rows = yield* db((d) =>
+        d.select().from(SessionTable).where(and(...conditions)).orderBy(desc(SessionTable.time_updated)).limit(limit).all(),
+      )
+      return rows.map(fromRow)
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
@@ -596,8 +617,8 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       }).pipe(Effect.withSpan("Session.updatePart"))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
-      const row = Database.use((db) =>
-        db
+      const row = yield* db((d) =>
+        d
           .select()
           .from(PartTable)
           .where(
@@ -730,9 +751,16 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
 
     const messages = Effect.fn("Session.messages")(function* (input: { sessionID: SessionID; limit?: number }) {
       if (input.limit) {
-        return MessageV2.page({ sessionID: input.sessionID, limit: input.limit }).items
+        const result = yield* Effect.promise(() => MessageV2.page({ sessionID: input.sessionID, limit: input.limit! }))
+        return result.items
       }
-      return Array.from(MessageV2.stream(input.sessionID)).reverse()
+      return yield* Effect.promise(async () => {
+        const items: MessageV2.WithParts[] = []
+        for await (const item of MessageV2.stream(input.sessionID)) {
+          items.push(item)
+        }
+        return items.reverse()
+      })
     })
 
     const removeMessage = Effect.fn("Session.removeMessage")(function* (input: {
@@ -774,10 +802,12 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       sessionID: SessionID,
       predicate: (msg: MessageV2.WithParts) => boolean,
     ) {
-      for (const item of MessageV2.stream(sessionID)) {
-        if (predicate(item)) return Option.some(item)
-      }
-      return Option.none<MessageV2.WithParts>()
+      return yield* Effect.promise(async () => {
+        for await (const item of MessageV2.stream(sessionID)) {
+          if (predicate(item)) return Option.some(item)
+        }
+        return Option.none<MessageV2.WithParts>()
+      })
     })
 
     return Service.of({
@@ -813,58 +843,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(SyncEvent.defaultLayer),
 )
 
-function* listByProject(
-  input: ListInput & {
-    projectID: ProjectID
-  },
-) {
-  const conditions = [eq(SessionTable.project_id, input.projectID)]
-
-  if (input.workspaceID) {
-    conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
-  }
-  if (input.path !== undefined) {
-    if (input.path) {
-      const conds = [eq(SessionTable.path, input.path), like(SessionTable.path, `${input.path}/%`)]
-
-      conditions.push(
-        input.directory
-          ? or(...conds, and(isNull(SessionTable.path), eq(SessionTable.directory, input.directory))!)!
-          : or(...conds)!,
-      )
-    }
-  } else if (input.scope !== "project" && !Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
-    if (input.directory) {
-      conditions.push(eq(SessionTable.directory, input.directory))
-    }
-  }
-  if (input.roots) {
-    conditions.push(isNull(SessionTable.parent_id))
-  }
-  if (input.start) {
-    conditions.push(gte(SessionTable.time_updated, input.start))
-  }
-  if (input.search) {
-    conditions.push(like(SessionTable.title, `%${input.search}%`))
-  }
-
-  const limit = input.limit ?? 100
-
-  const rows = Database.use((db) =>
-    db
-      .select()
-      .from(SessionTable)
-      .where(and(...conditions))
-      .orderBy(desc(SessionTable.time_updated))
-      .limit(limit)
-      .all(),
-  )
-  for (const row of rows) {
-    yield fromRow(row)
-  }
-}
-
-export function* listGlobal(input?: {
+export async function* listGlobal(input?: {
   directory?: string
   roots?: boolean
   start?: number
@@ -896,7 +875,7 @@ export function* listGlobal(input?: {
 
   const limit = input?.limit ?? 100
 
-  const rows = Database.use((db) => {
+  const rows = await Database.useAsync((db) => {
     const query =
       conditions.length > 0
         ? db
@@ -911,7 +890,7 @@ export function* listGlobal(input?: {
   const projects = new Map<string, ProjectInfo>()
 
   if (ids.length > 0) {
-    const items = Database.use((db) =>
+    const items = await Database.useAsync((db) =>
       db
         .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
         .from(ProjectTable)

@@ -4,8 +4,9 @@ import { disposeAllInstances } from "./fixture"
 
 export async function resetDatabase() {
   await disposeAllInstances().catch(() => undefined)
+  const p = Database.adapterPath()
   Database.close()
-  await rm(Database.Path, { force: true }).catch(() => undefined)
-  await rm(`${Database.Path}-wal`, { force: true }).catch(() => undefined)
-  await rm(`${Database.Path}-shm`, { force: true }).catch(() => undefined)
+  await rm(p, { force: true }).catch(() => undefined)
+  await rm(`${p}-wal`, { force: true }).catch(() => undefined)
+  await rm(`${p}-shm`, { force: true }).catch(() => undefined)
 }

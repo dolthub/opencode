@@ -69,8 +69,7 @@ function fromRow(row: typeof WorkspaceTable.$inferSelect): Info {
   }
 }
 
-const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-  Effect.sync(() => Database.use(fn))
+const db = <T>(fn: (d: Database.AnyDB) => T | Promise<T>) => Database.useEffect(fn)
 
 const log = Log.create({ service: "workspace-sync" })
 
@@ -721,15 +720,10 @@ export const layer = Layer.effect(
     })
 
     const list = Effect.fn("Workspace.list")(function* (project: Project.Info) {
-      return yield* db((db) =>
-        db
-          .select()
-          .from(WorkspaceTable)
-          .where(eq(WorkspaceTable.project_id, project.id))
-          .all()
-          .map(fromRow)
-          .sort((a, b) => a.id.localeCompare(b.id)),
-      )
+      return yield* db(async (db) => {
+        const rows = await db.select().from(WorkspaceTable).where(eq(WorkspaceTable.project_id, project.id)).all()
+        return rows.map(fromRow).sort((a, b) => a.id.localeCompare(b.id))
+      })
     })
 
     const get = Effect.fn("Workspace.get")(function* (id: WorkspaceID) {

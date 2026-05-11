@@ -79,9 +79,10 @@ export const StatsCommand = effectCmd({
   }),
 })
 
-const getAllSessions = Effect.sync(() =>
-  Database.use((db) => db.select().from(SessionTable).all()).map((row) => Session.fromRow(row)),
-)
+const getAllSessions = Database.useEffect(async (db) => {
+  const rows = await db.select().from(SessionTable).all()
+  return rows.map((row) => Session.fromRow(row))
+})
 
 const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
   days?: number,

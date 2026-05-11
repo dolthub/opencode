@@ -955,7 +955,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         format: input.format,
       }
 
-      const current = Database.use((db) =>
+      const current = yield* Database.useEffect((db) =>
         db
           .select({ agent: SessionTable.agent, model: SessionTable.model })
           .from(SessionTable)

@@ -8,10 +8,10 @@ import { eq } from "drizzle-orm"
 export function initProjectors() {
   SyncEvent.init({
     projectors: sessionProjectors,
-    convertEvent: (type, data) => {
+    convertEvent: async (type, data) => {
       if (type === "session.updated") {
         const id = (data as SyncEvent.Event<typeof Session.Event.Updated>["data"]).sessionID
-        const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+        const row = await Database.useAsync((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
 
         if (!row) return data
 

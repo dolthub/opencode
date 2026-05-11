@@ -161,8 +161,7 @@ export const layer: Layer.Layer<
       Effect.catch(() => Effect.succeed({ code: 1, text: "", stderr: "" } satisfies GitResult)),
     )
 
-    const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D) => any ? D : never) => T) =>
-      Effect.sync(() => Database.use(fn))
+    const db = <T>(fn: (d: Database.AnyDB) => T | Promise<T>) => Database.useEffect(fn)
 
     const emitUpdated = (data: Info) =>
       Effect.sync(() =>
@@ -380,7 +379,7 @@ export const layer: Layer.Layer<
     })
 
     const list = Effect.fn("Project.list")(function* () {
-      return yield* db((d) => d.select().from(ProjectTable).all().map(fromRow))
+      return yield* db(async (d) => (await d.select().from(ProjectTable).all()).map(fromRow))
     })
 
     const get = Effect.fn("Project.get")(function* (id: ProjectID) {
@@ -389,7 +388,7 @@ export const layer: Layer.Layer<
     })
 
     const update = Effect.fn("Project.update")(function* (input: UpdateInput) {
-      const result = yield* db((d) =>
+      yield* db((d) =>
         d
           .update(ProjectTable)
           .set({
@@ -401,9 +400,9 @@ export const layer: Layer.Layer<
             time_updated: Date.now(),
           })
           .where(eq(ProjectTable.id, input.projectID))
-          .returning()
-          .get(),
+          .run(),
       )
+      const result = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, input.projectID)).get())
       if (!result) throw new Error(`Project not found: ${input.projectID}`)
       const data = fromRow(result)
       yield* emitUpdated(data)
@@ -462,32 +461,32 @@ export const layer: Layer.Layer<
       if (!row) throw new Error(`Project not found: ${id}`)
       const sboxes = [...row.sandboxes]
       if (!sboxes.includes(directory)) sboxes.push(directory)
-      const result = yield* db((d) =>
+      yield* db((d) =>
         d
           .update(ProjectTable)
           .set({ sandboxes: sboxes, time_updated: Date.now() })
           .where(eq(ProjectTable.id, id))
-          .returning()
-          .get(),
+          .run(),
       )
-      if (!result) throw new Error(`Project not found: ${id}`)
-      yield* emitUpdated(fromRow(result))
+      const updated = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      if (!updated) throw new Error(`Project not found: ${id}`)
+      yield* emitUpdated(fromRow(updated))
     })
 
     const removeSandbox = Effect.fn("Project.removeSandbox")(function* (id: ProjectID, directory: string) {
       const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
       if (!row) throw new Error(`Project not found: ${id}`)
       const sboxes = row.sandboxes.filter((s) => s !== directory)
-      const result = yield* db((d) =>
+      yield* db((d) =>
         d
           .update(ProjectTable)
           .set({ sandboxes: sboxes, time_updated: Date.now() })
           .where(eq(ProjectTable.id, id))
-          .returning()
-          .get(),
+          .run(),
       )
-      if (!result) throw new Error(`Project not found: ${id}`)
-      yield* emitUpdated(fromRow(result))
+      const updated = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+      if (!updated) throw new Error(`Project not found: ${id}`)
+      yield* emitUpdated(fromRow(updated))
     })
 
     return Service.of({
@@ -515,24 +514,19 @@ export const defaultLayer = layer.pipe(
 
 export const use = serviceUse(Service)
 
-export function list() {
-  return Database.use((db) =>
-    db
-      .select()
-      .from(ProjectTable)
-      .all()
-      .map((row) => fromRow(row)),
-  )
+export async function list() {
+  const rows = await Database.useAsync((db) => db.select().from(ProjectTable).all())
+  return rows.map(fromRow)
 }
 
-export function get(id: ProjectID): Info | undefined {
-  const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+export async function get(id: ProjectID): Promise<Info | undefined> {
+  const row = await Database.useAsync((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
   if (!row) return undefined
   return fromRow(row)
 }
 
-export function setInitialized(id: ProjectID) {
-  Database.use((db) =>
+export async function setInitialized(id: ProjectID) {
+  await Database.useAsync((db) =>
     db.update(ProjectTable).set({ time_initialized: Date.now() }).where(eq(ProjectTable.id, id)).run(),
   )
 }

@@ -65,33 +65,32 @@ export function toPartialRow(info: DeepPartial<Session.Info>) {
 }
 
 export default [
-  SyncEvent.project(Session.Event.Created, (db, data) => {
-    db.insert(SessionTable)
-      .values(Session.toRow(data.info as Session.Info))
-      .run()
+  SyncEvent.project(Session.Event.Created, async (db, data) => {
+    await db.insert(SessionTable).values(Session.toRow(data.info as Session.Info)).run()
   }),
 
-  SyncEvent.project(Session.Event.Updated, (db, data) => {
+  SyncEvent.project(Session.Event.Updated, async (db, data) => {
     const info = data.info
-    const row = db
+    await db
       .update(SessionTable)
       .set(toPartialRow(info as Session.Patch))
       .where(eq(SessionTable.id, data.sessionID))
-      .returning()
-      .get()
+      .run()
+    const row = await db.select().from(SessionTable).where(eq(SessionTable.id, data.sessionID)).get()
     if (!row) throw new NotFoundError({ message: `Session not found: ${data.sessionID}` })
   }),
 
-  SyncEvent.project(Session.Event.Deleted, (db, data) => {
-    db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID)).run()
+  SyncEvent.project(Session.Event.Deleted, async (db, data) => {
+    await db.delete(SessionTable).where(eq(SessionTable.id, data.sessionID)).run()
   }),
 
-  SyncEvent.project(MessageV2.Event.Updated, (db, data) => {
+  SyncEvent.project(MessageV2.Event.Updated, async (db, data) => {
     const time_created = data.info.time.created
     const { id, sessionID, ...rest } = data.info
 
     try {
-      db.insert(MessageTable)
+      await db
+        .insert(MessageTable)
         .values({
           id,
           session_id: sessionID,
@@ -106,23 +105,26 @@ export default [
     }
   }),
 
-  SyncEvent.project(MessageV2.Event.Removed, (db, data) => {
-    db.delete(MessageTable)
+  SyncEvent.project(MessageV2.Event.Removed, async (db, data) => {
+    await db
+      .delete(MessageTable)
       .where(and(eq(MessageTable.id, data.messageID), eq(MessageTable.session_id, data.sessionID)))
       .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartRemoved, (db, data) => {
-    db.delete(PartTable)
+  SyncEvent.project(MessageV2.Event.PartRemoved, async (db, data) => {
+    await db
+      .delete(PartTable)
       .where(and(eq(PartTable.id, data.partID), eq(PartTable.session_id, data.sessionID)))
       .run()
   }),
 
-  SyncEvent.project(MessageV2.Event.PartUpdated, (db, data) => {
+  SyncEvent.project(MessageV2.Event.PartUpdated, async (db, data) => {
     const { id, messageID, sessionID, ...rest } = data.part
 
     try {
-      db.insert(PartTable)
+      await db
+        .insert(PartTable)
         .values({
           id,
           message_id: messageID,
