@@ -1,17 +1,30 @@
 import type { Argv } from "yargs"
 import { spawn } from "child_process"
 import { Database } from "@/storage/db"
-import { drizzle } from "drizzle-orm/bun-sqlite"
-import { Database as BunDatabase } from "bun:sqlite"
+import { DatabaseSync } from "@dolthub/doltlite"
+import { init as initDoltlite } from "@/storage/db.doltlite.bun"
 import { UI } from "../ui"
 import { cmd } from "./cmd"
 import { JsonMigration } from "@/storage/json-migration"
 import { EOL } from "os"
 import { errorMessage } from "../../util/error"
 
+function printRows(rows: Record<string, unknown>[], format: string) {
+  if (format === "json") {
+    console.log(JSON.stringify(rows, null, 2))
+    return
+  }
+  if (rows.length === 0) return
+  const keys = Object.keys(rows[0])
+  console.log(keys.join("\t"))
+  for (const row of rows) {
+    console.log(keys.map((k) => row[k]).join("\t"))
+  }
+}
+
 const QueryCommand = cmd({
   command: "$0 [query]",
-  describe: "open an interactive sqlite3 shell or run a query",
+  describe: "open an interactive doltlite shell or run a query",
   builder: (yargs: Argv) => {
     return yargs
       .positional("query", {
@@ -28,28 +41,21 @@ const QueryCommand = cmd({
   handler: async (args: { query?: string; format: string }) => {
     const query = args.query as string | undefined
     if (query) {
-      const db = new BunDatabase(Database.Path, { readonly: true })
+      const db = new DatabaseSync(Database.Path, { readOnly: true })
       try {
-        const result = db.query(query).all() as Record<string, unknown>[]
-        if (args.format === "json") {
-          console.log(JSON.stringify(result, null, 2))
-        } else if (result.length > 0) {
-          const keys = Object.keys(result[0])
-          console.log(keys.join("\t"))
-          for (const row of result) {
-            console.log(keys.map((k) => row[k]).join("\t"))
-          }
-        }
+        const rows = db.prepare(query).all() as Record<string, unknown>[]
+        printRows(rows, args.format)
       } catch (err) {
         UI.error(errorMessage(err))
         process.exit(1)
+      } finally {
+        db.close()
       }
-      db.close()
       return
     }
-    const child = spawn("sqlite3", [Database.Path], {
-      stdio: "inherit",
-    })
+    // The `doltlite` CLI is a sqlite3-style shell that ships with doltlite.
+    // Same convention as before — assume it's on $PATH.
+    const child = spawn("doltlite", [Database.Path], { stdio: "inherit" })
     await new Promise((resolve) => child.on("close", resolve))
   },
 })
@@ -66,7 +72,7 @@ const MigrateCommand = cmd({
   command: "migrate",
   describe: "migrate JSON data to SQLite (merges with existing data)",
   handler: async () => {
-    const sqlite = new BunDatabase(Database.Path)
+    const db = initDoltlite(Database.Path)
     const tty = process.stderr.isTTY
     const width = 36
     const orange = "\x1b[38;5;214m"
@@ -75,7 +81,7 @@ const MigrateCommand = cmd({
     let last = -1
     if (tty) process.stderr.write("\x1b[?25l")
     try {
-      const stats = await JsonMigration.run(drizzle({ client: sqlite }), {
+      const stats = await JsonMigration.run(db, {
         progress: (event) => {
           const percent = Math.floor((event.current / event.total) * 100)
           if (percent === last) return
@@ -105,7 +111,7 @@ const MigrateCommand = cmd({
       UI.error(`Migration failed: ${errorMessage(err)}`)
       process.exit(1)
     } finally {
-      sqlite.close()
+      ;(db as any).$client.close()
     }
   },
 })
