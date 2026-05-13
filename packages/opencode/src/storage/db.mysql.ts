@@ -538,7 +538,7 @@ export function init(connectionString: string): StorageAdapter {
     supportsVersioning: () => true,
     currentBranch: async (): Promise<string> => {
       const [rows] = await mysqlDb.execute(sql`SELECT active_branch()`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       return Object.values(row)[0] as string
     },
     changeBranch: async (name: string): Promise<void> => {
@@ -558,7 +558,7 @@ export function init(connectionString: string): StorageAdapter {
     },
     hasBranch: async (name: string): Promise<boolean> => {
       const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
     },
     doltCommit: async (message: string): Promise<void> => {

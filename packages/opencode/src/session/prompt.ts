@@ -1662,6 +1662,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             Effect.tapError((error) =>
               bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() }),
             ),
+            Effect.orDie,
           )
         : Effect.promise(async () => cmd.template))
 
