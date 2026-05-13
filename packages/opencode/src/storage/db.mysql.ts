@@ -556,6 +556,11 @@ export function init(connectionString: string): StorageAdapter {
         await mysqlDb.execute(sql`CALL dolt_branch(${name})`)
       }
     },
+    hasBranch: async (name: string): Promise<boolean> => {
+      const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
+      const row = (rows as Record<string, unknown>[])[0]
+      return Number(Object.values(row)[0]) > 0
+    },
     doltCommit: async (message: string): Promise<void> => {
       try {
         await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)

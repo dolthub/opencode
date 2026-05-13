@@ -86,6 +86,10 @@ const cli = yargs(args)
     describe: "run without external plugins",
     type: "boolean",
   })
+  .option("branch", {
+    describe: "branch to use (requires a versioning-capable storage backend)",
+    type: "string",
+  })
   .middleware(async (opts) => {
     if (opts.pure) {
       process.env.OPENCODE_PURE = "1"
@@ -149,6 +153,19 @@ const cli = yargs(args)
         }
       }
       process.stderr.write("Database migration complete." + EOL)
+    }
+
+    if (opts.branch) {
+      if (!Database.supportsVersioning()) {
+        throw new Error(
+          "The --branch option requires a versioning-capable storage backend (e.g., set OPENCODE_MYSQL_URL to use a Dolt server)",
+        )
+      }
+      if (!(await Database.hasBranch(opts.branch))) {
+        UI.error(`Branch "${opts.branch}" does not exist`)
+        process.exit(1)
+      }
+      await Database.changeBranch(opts.branch)
     }
   })
   .usage("")

@@ -16,4 +16,5 @@ export interface StorageAdapter {
   createBranch(name: string, startPoint: string | null, force: boolean): void | Promise<void>
   changeBranch(name: string): void | Promise<void>
   currentBranch(): string | Promise<string>
+  hasBranch(name: string): boolean | Promise<boolean>
 }

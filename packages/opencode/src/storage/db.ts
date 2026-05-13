@@ -257,4 +257,16 @@ export function doltCommit(message: string): Effect.Effect<void> {
   return Effect.promise(() => Promise.resolve(Adapter().doltCommit(message)))
 }
 
+export function supportsVersioning(): boolean {
+  return Adapter().supportsVersioning()
+}
+
+export async function changeBranch(name: string): Promise<void> {
+  await Adapter().changeBranch(name)
+}
+
+export async function hasBranch(name: string): Promise<boolean> {
+  return Adapter().hasBranch(name)
+}
+
 export * as Database from "./db"
