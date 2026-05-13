@@ -3,6 +3,7 @@ import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
 import { Config } from "@/config/config"
+import { Database } from "@/storage/db"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
@@ -27,6 +28,23 @@ import * as DateTime from "effect/DateTime"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
+
+function snippet(text: string, max = 80): string {
+  const trimmed = text.trim().replace(/\s+/g, " ")
+  return trimmed.length <= max ? trimmed : trimmed.slice(0, max) + "…"
+}
+
+function userPromptSnippet(messages: LLM.StreamInput["messages"]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role !== "user") continue
+    const c = msg.content
+    const text = typeof c === "string" ? c : Array.isArray(c) ? (c as any[]).filter((p) => p.type === "text").map((p: any) => p.text).join(" ") : ""
+    const trimmed = text.trim().replace(/\s+/g, " ")
+    if (trimmed) return snippet(trimmed)
+  }
+  return ""
+}
 
 export type Result = "compact" | "stop" | "continue"
 
@@ -346,6 +364,7 @@ export const layer: Layer.Layer<
                 ? { ...value.providerMetadata, providerExecuted: true }
                 : value.providerMetadata,
             }))
+            yield* Database.doltCommit(`tool call: ${value.toolName}(${snippet(JSON.stringify(value.input))})`)
 
             const parts = yield* Effect.promise(() => MessageV2.parts(ctx.assistantMessage.id))
             const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
@@ -400,6 +419,8 @@ export const layer: Layer.Layer<
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
             yield* completeToolCall(value.toolCallId, value.output)
+            const resultLabel = value.output.title?.trim() || snippet(value.output.output)
+            yield* Database.doltCommit(`tool result: ${toolCall?.part.tool ?? "unknown"}: ${resultLabel}`)
             return
           }
 
@@ -419,6 +440,7 @@ export const layer: Layer.Layer<
               timestamp: DateTime.makeUnsafe(Date.now()),
             })
             yield* failToolCall(value.toolCallId, value.error)
+            yield* Database.doltCommit(`tool error: ${toolCall?.part.tool ?? "unknown"}: ${snippet(errorMessage(value.error))}`)
             return
           }
 
@@ -482,6 +504,7 @@ export const layer: Layer.Layer<
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
+            yield* Database.doltCommit(`llm response (${value.finishReason}): ${ctx.model.id}`)
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
@@ -679,6 +702,8 @@ export const layer: Layer.Layer<
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
+            const promptSnip = userPromptSnippet(streamInput.messages)
+            yield* Database.doltCommit(promptSnip ? `llm request: ${promptSnip}` : "llm request")
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(

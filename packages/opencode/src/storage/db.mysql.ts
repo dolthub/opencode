@@ -1,5 +1,6 @@
 import { mysqlTable, varchar, text, int, bigint, json, boolean, index, primaryKey } from "drizzle-orm/mysql-core"
 import { drizzle } from "drizzle-orm/mysql2"
+import { sql } from "drizzle-orm"
 import type { MySql2Database } from "drizzle-orm/mysql2"
 import mysql from "mysql2/promise"
 import * as Log from "@opencode-ai/core/util/log"
@@ -534,5 +535,36 @@ export function init(connectionString: string): StorageAdapter {
       }
     },
     close: () => pool.end(),
+    supportsVersioning: () => true,
+    currentBranch: async (): Promise<string> => {
+      const [rows] = await mysqlDb.execute(sql`SELECT active_branch()`)
+      const row = (rows as Record<string, unknown>[])[0]
+      return Object.values(row)[0] as string
+    },
+    changeBranch: async (name: string): Promise<void> => {
+      await mysqlDb.execute(sql`CALL dolt_checkout(${name})`)
+    },
+    createBranch: async (name: string, startPoint: string | null, force: boolean): Promise<void> => {
+      if (!name) throw new Error("branch name must be non-empty")
+      if (startPoint && force) {
+        await mysqlDb.execute(sql`CALL dolt_branch('-f', ${name}, ${startPoint})`)
+      } else if (startPoint) {
+        await mysqlDb.execute(sql`CALL dolt_branch(${name}, ${startPoint})`)
+      } else if (force) {
+        await mysqlDb.execute(sql`CALL dolt_branch('-f', ${name})`)
+      } else {
+        await mysqlDb.execute(sql`CALL dolt_branch(${name})`)
+      }
+    },
+    doltCommit: async (message: string): Promise<void> => {
+      try {
+        await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!msg.toLowerCase().includes("nothing to commit")) {
+          log.warn("dolt_commit failed", { error: msg })
+        }
+      }
+    },
   }
 }

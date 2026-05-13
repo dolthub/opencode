@@ -147,6 +147,8 @@ export function init(filePath: string): StorageAdapter {
   const sqlite = new DatabaseSync(actualPath)
   const client = new DoltliteDatabase(sqlite)
   const db = drizzle({ client: client as any })
+  const version = (client.prepare("SELECT dolt_version() as version").get() as { version: string } | undefined)?.version
+  log.info("dolt version", { version })
   return {
     db: db as any,
     path: actualPath,
@@ -197,5 +199,19 @@ export function init(filePath: string): StorageAdapter {
       log.info("migrations complete", { ran, skipped })
     },
     close: () => sqlite.close(),
+    supportsVersioning: () => true,
+    createBranch: () => { throw new Error("not implemented") },
+    changeBranch: () => { throw new Error("not implemented") },
+    currentBranch: () => { throw new Error("not implemented") },
+    doltCommit: (message: string): void => {
+      try {
+        client.prepare("SELECT dolt_commit('-Am', ?)").get(message)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        if (!msg.toLowerCase().includes("nothing to commit")) {
+          log.warn("dolt_commit failed", { error: msg })
+        }
+      }
+    },
   }
 }

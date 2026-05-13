@@ -130,9 +130,6 @@ const Adapter = lazy((): StorageAdapter => {
     adapter.migrate(entries)
   }
 
-  const doltVersion = db.get<{ version: string }>(sql`SELECT dolt_version() as version`)
-  log.info("dolt version", { version: doltVersion?.version })
-
   return adapter
 })
 
@@ -252,6 +249,12 @@ export async function transactionAsync<T>(callback: (db: MySQLDB) => Promise<T>)
 export function useEffect<T>(callback: (db: TxOrDb) => T | Promise<T>): Effect.Effect<T> {
   if (isAsync) return Effect.promise(() => useAsync(callback))
   return Effect.sync(() => use(callback as (db: TxOrDb) => T))
+}
+
+// Delegates to the active adapter's doltCommit. No-ops on plain SQLite;
+// uses SELECT on DoltLite and CALL on MySQL/Dolt-server.
+export function doltCommit(message: string): Effect.Effect<void> {
+  return Effect.promise(() => Promise.resolve(Adapter().doltCommit(message)))
 }
 
 export * as Database from "./db"

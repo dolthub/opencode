@@ -96,5 +96,10 @@ export function init(filePath: string): StorageAdapter {
     path: filePath,
     migrate: (entries: Journal) => migrate(db, entries),
     close: () => sqlite.close(),
+    doltCommit: () => {},
+    supportsVersioning: () => false,
+    createBranch: () => { throw new Error("not implemented") },
+    changeBranch: () => { throw new Error("not implemented") },
+    currentBranch: () => { throw new Error("not implemented") },
   }
 }
