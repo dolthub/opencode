@@ -261,6 +261,10 @@ export function supportsVersioning(): boolean {
   return Adapter().supportsVersioning()
 }
 
+export async function createBranch(name: string, startPoint: string | null = null, force: boolean = false): Promise<void> {
+  await Adapter().createBranch(name, startPoint, force)
+}
+
 export async function changeBranch(name: string): Promise<void> {
   await Adapter().changeBranch(name)
 }

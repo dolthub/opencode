@@ -8,6 +8,7 @@ import z from "zod"
 import { zod, ZodOverride } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import { Config } from "@/config/config"
+import { Database } from "@/storage/db"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
@@ -122,8 +123,9 @@ export const layer = Layer.effect(
             throw new Error("split: a prompt is required after the count (e.g. /split 3 <prompt>)")
           }
           console.log("[split] count:", count, "prompt:", promptText, "raw:", rawArguments)
-          // TODO: implement split logic
-          return promptText
+          const uuids = Array.from({ length: count }, () => crypto.randomUUID())
+          await Promise.all(uuids.map((id) => Database.createBranch(id)))
+          return "this is a test"
         },
       }
 
