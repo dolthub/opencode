@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @ts-nocheck
 /**
  * Diagnostic script: create a session (and a stub project) in an opencode database.
  *

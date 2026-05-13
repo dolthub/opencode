@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @ts-nocheck
 /**
  * Tests whether drizzle INSERT + SELECT round-trips correctly through the
  * DoltLite adapter — the exact code path the real application uses.

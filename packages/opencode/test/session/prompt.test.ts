@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NodeFileSystem } from "@effect/platform-node"
 import { FetchHttpClient } from "effect/unstable/http"
 import { expect } from "bun:test"

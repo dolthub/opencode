@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"

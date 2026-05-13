@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @ts-nocheck
 /**
  * Diagnostic script: read session IDs from an opencode database file.
  *

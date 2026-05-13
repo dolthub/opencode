@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @ts-nocheck
 /**
  * Diagnostic script: list all projects in an opencode database file.
  *

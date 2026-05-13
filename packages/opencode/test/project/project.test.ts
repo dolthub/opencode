@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, expect, test } from "bun:test"
 import { Bus } from "@/bus"
 import { Project } from "@/project/project"

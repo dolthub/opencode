@@ -14,7 +14,7 @@ class BunStatement {
 
   run(...params: unknown[]) {
     try {
-      const result = this.stmt.run(...params)
+      const result = this.stmt.run(...(params as any[]))
       log.info("query", { sql: this.sql, params, changes: result?.changes })
       return result
     } catch (err) {
@@ -25,7 +25,7 @@ class BunStatement {
 
   get(...params: unknown[]) {
     try {
-      const result = this.stmt.get(...params)
+      const result = this.stmt.get(...(params as any[]))
       log.info("query", { sql: this.sql, params, rows: result ? 1 : 0, data: result })
       return result
     } catch (err) {
@@ -36,7 +36,7 @@ class BunStatement {
 
   all(...params: unknown[]) {
     try {
-      const result = this.stmt.all(...params)
+      const result = this.stmt.all(...(params as any[]))
       log.info("query", { sql: this.sql, params, rows: result.length, data: result })
       return result
     } catch (err) {
@@ -47,7 +47,7 @@ class BunStatement {
 
   values(...params: unknown[]) {
     try {
-      const result = this.stmt.values(...params)
+      const result = this.stmt.values(...(params as any[]))
       log.info("query", { sql: this.sql, params, rows: result.length, data: result })
       return result
     } catch (err) {

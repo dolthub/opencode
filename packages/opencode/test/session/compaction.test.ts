@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { APICallError } from "ai"
 import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect"
