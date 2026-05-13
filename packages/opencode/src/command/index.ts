@@ -44,7 +44,13 @@ export const Info = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 
 // for some reason zod is inferring `string` for z.promise(z.string()).or(z.string()) so we have to manually override it
-export type Info = Omit<Schema.Schema.Type<typeof Info>, "template"> & { template: Promise<string> | string }
+export type Info = Omit<Schema.Schema.Type<typeof Info>, "template"> & {
+  template: Promise<string> | string
+  // When present, called instead of template resolution. Receives parsed argument
+  // tokens and the raw argument string; returns the final prompt string or throws
+  // a user-visible Error to abort execution.
+  execute?: (args: string[], rawArguments: string) => Promise<string>
+}
 
 export function hints(template: string) {
   const result: string[] = []
@@ -59,6 +65,7 @@ export function hints(template: string) {
 export const Default = {
   INIT: "init",
   REVIEW: "review",
+  SPLIT: "split",
 } as const
 
 export interface Interface {
@@ -98,6 +105,26 @@ export const layer = Layer.effect(
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      }
+      commands[Default.SPLIT] = {
+        name: Default.SPLIT,
+        description: "split a task into N parallel subtasks: /split <N> <prompt>",
+        source: "command",
+        template: "",
+        hints: [],
+        execute: async (args: string[], rawArguments: string): Promise<string> => {
+          const count = Number(args[0])
+          if (!args[0] || !Number.isInteger(count) || count < 1) {
+            throw new Error("split: first argument must be a positive integer (e.g. /split 3 <prompt>)")
+          }
+          const promptText = args.slice(1).join(" ").trim()
+          if (!promptText) {
+            throw new Error("split: a prompt is required after the count (e.g. /split 3 <prompt>)")
+          }
+          console.log("[split] count:", count, "prompt:", promptText, "raw:", rawArguments)
+          // TODO: implement split logic
+          return promptText
+        },
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

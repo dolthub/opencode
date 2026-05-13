@@ -1654,7 +1654,16 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
       const raw = input.arguments.match(argsRegex) ?? []
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
-      const templateCommand = yield* Effect.promise(async () => cmd.template)
+      const templateCommand = yield* (cmd.execute
+        ? Effect.tryPromise({
+            try: () => cmd.execute!(args, input.arguments),
+            catch: (e) => new NamedError.Unknown({ message: e instanceof Error ? e.message : String(e) }),
+          }).pipe(
+            Effect.tapError((error) =>
+              bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() }),
+            ),
+          )
+        : Effect.promise(async () => cmd.template))
 
       const placeholders = templateCommand.match(placeholderRegex) ?? []
       let last = 0
