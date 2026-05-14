@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 /**
  * Diagnostic script: read session IDs from an opencode database file.
  *
@@ -9,6 +8,7 @@
  */
 
 import { parseArgs } from "util"
+import type { SQLQueryBindings } from "bun:sqlite"
 
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
@@ -54,7 +54,7 @@ const filePath = positionals[0]
 
 type Row = { id: string; title: string; project_id: string; project_worktree: string; project_name: string | null }
 
-function run(db: { prepare: (sql: string) => { all: (...args: unknown[]) => unknown[]; run: (...args: unknown[]) => unknown } }) {
+function run(db: { prepare: (sql: string) => { all: (...args: SQLQueryBindings[]) => unknown[]; run: (...args: SQLQueryBindings[]) => unknown } }) {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session'")
     .all() as { name: string }[]

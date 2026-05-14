@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 /**
  * Diagnostic script: list all projects in an opencode database file.
  *
@@ -9,6 +8,7 @@
  */
 
 import { parseArgs } from "util"
+import type { SQLQueryBindings } from "bun:sqlite"
 
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
@@ -51,7 +51,7 @@ Got: ${JSON.stringify(positionals)}
 
 const filePath = positionals[0]
 
-function run(db: { prepare: (sql: string) => { all: (...args: unknown[]) => unknown[] } }) {
+function run(db: { prepare: (sql: string) => { all: (...args: SQLQueryBindings[]) => unknown[] } }) {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project'")
     .all() as { name: string }[]

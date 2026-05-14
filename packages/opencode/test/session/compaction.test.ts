@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { APICallError } from "ai"
 import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect"
@@ -1218,7 +1217,9 @@ describe("session.compaction.process", () => {
           expect(captured).toContain("zzzz")
           expect(captured).not.toContain("keep tail")
 
-          const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const streamedItems: MessageV2.WithParts[] = []
+          for await (const item of MessageV2.stream(session.id)) streamedItems.push(item)
+          const filtered = MessageV2.filterCompacted(streamedItems)
           expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
           expect(filtered[1]?.info.role).toBe("assistant")
           expect(filtered[1]?.info.role === "assistant" ? filtered[1].info.summary : false).toBe(true)
@@ -1690,7 +1691,9 @@ describe("session.compaction.process", () => {
             auto: false,
           })
 
-          msgs = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const streamedItems1: MessageV2.WithParts[] = []
+          for await (const item of MessageV2.stream(session.id)) streamedItems1.push(item)
+          msgs = MessageV2.filterCompacted(streamedItems1)
           parent = msgs.at(-1)?.info.id
           expect(parent).toBeTruthy()
           await rt.runPromise(
@@ -1759,7 +1762,9 @@ describe("session.compaction.process", () => {
             auto: false,
           })
 
-          msgs = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const streamedItems2: MessageV2.WithParts[] = []
+          for await (const item of MessageV2.stream(session.id)) streamedItems2.push(item)
+          msgs = MessageV2.filterCompacted(streamedItems2)
           parent = msgs.at(-1)?.info.id
           expect(parent).toBeTruthy()
           await rt.runPromise(
@@ -1773,7 +1778,9 @@ describe("session.compaction.process", () => {
             ),
           )
 
-          const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const streamedItems3: MessageV2.WithParts[] = []
+          for await (const item of MessageV2.stream(session.id)) streamedItems3.push(item)
+          const filtered = MessageV2.filterCompacted(streamedItems3)
           const ids = filtered.map((msg) => msg.info.id)
 
           expect(ids).not.toContain(u1.id)

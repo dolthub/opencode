@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
@@ -221,7 +220,7 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         } satisfies LLM.StreamInput
 
         const value = yield* handle.process(input)
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
         const calls = yield* llm.calls
 
         expect(value).toBe("continue")
@@ -296,7 +295,7 @@ it.live("session.processor effect tests preserve text start time", () =>
         yield* Effect.promise(async () => {
           const stop = Date.now() + 500
           while (Date.now() < stop) {
-            const text = MessageV2.parts(msg.id).find((part): part is MessageV2.TextPart => part.type === "text")
+            const text = (await MessageV2.parts(msg.id)).find((part): part is MessageV2.TextPart => part.type === "text")
             if (text?.time?.start) return
             await Bun.sleep(10)
           }
@@ -306,7 +305,7 @@ it.live("session.processor effect tests preserve text start time", () =>
         gate.resolve()
 
         const exit = yield* Fiber.await(run)
-        const text = MessageV2.parts(msg.id).find((part): part is MessageV2.TextPart => part.type === "text")
+        const text = (yield* Effect.promise(() => MessageV2.parts(msg.id))).find((part): part is MessageV2.TextPart => part.type === "text")
 
         expect(Exit.isSuccess(exit)).toBe(true)
         expect(text?.text).toBe("hello")
@@ -355,7 +354,7 @@ it.live("session.processor effect tests stop after token overflow requests compa
           tools: {},
         })
 
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
 
         expect(value).toBe("compact")
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
@@ -400,7 +399,7 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
           tools: {},
         })
 
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
         const reasoning = parts.find((part): part is MessageV2.ReasoningPart => part.type === "reasoning")
         const text = parts.find((part): part is MessageV2.TextPart => part.type === "text")
 
@@ -448,7 +447,7 @@ it.live("session.processor effect tests reset reasoning state across retries", (
           tools: {},
         })
 
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
         const reasoning = parts.filter((part): part is MessageV2.ReasoningPart => part.type === "reasoning")
 
         expect(value).toBe("continue")
@@ -539,7 +538,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
           tools: {},
         })
 
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
@@ -694,7 +693,7 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
         yield* Fiber.interrupt(run)
 
         const exit = yield* Fiber.await(run)
-        const parts = MessageV2.parts(msg.id)
+        const parts = yield* Effect.promise(() => MessageV2.parts(msg.id))
         const call = parts.find((part): part is MessageV2.ToolPart => part.type === "tool")
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -765,7 +764,7 @@ it.live("session.processor effect tests record aborted errors and idle state", (
 
         const exit = yield* Fiber.await(run)
         yield* Effect.promise(() => seen.promise)
-        const stored = MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const stored = yield* Effect.promise(() => MessageV2.get({ sessionID: chat.id, messageID: msg.id }))
         const state = yield* sts.get(chat.id)
         off()
 
@@ -827,7 +826,7 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         yield* Fiber.interrupt(run)
 
         const exit = yield* Fiber.await(run)
-        const stored = MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const stored = yield* Effect.promise(() => MessageV2.get({ sessionID: chat.id, messageID: msg.id }))
         const state = yield* sts.get(chat.id)
 
         expect(Exit.isFailure(exit)).toBe(true)

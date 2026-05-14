@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 /**
  * Diagnostic script: create a session (and a stub project) in an opencode database.
  *
@@ -9,6 +8,7 @@
  */
 
 import { parseArgs } from "util"
+import type { SQLQueryBindings } from "bun:sqlite"
 
 const { values, positionals } = parseArgs({
   args: process.argv.slice(2),
@@ -51,7 +51,7 @@ Got: ${JSON.stringify(positionals)}
 
 const filePath = positionals[0]
 
-function run(db: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown; all: (...args: unknown[]) => unknown[] } }) {
+function run(db: { prepare: (sql: string) => { run: (...args: SQLQueryBindings[]) => unknown; all: (...args: SQLQueryBindings[]) => unknown[] } }) {
   const now = Date.now()
   const projectId = `proj_diag_${now}`
   const sessionId = `sess_diag_${now}`
