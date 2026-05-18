@@ -86,20 +86,49 @@ function migrations(dir: string): Journal {
   return sql.sort((a, b) => a.timestamp - b.timestamp)
 }
 
-// Loaded lazily when OPENCODE_MYSQL_URL is set. The conditional prevents
-// mysql2 from being bundled or imported when MySQL is not configured.
-const MySQLModule = Flag.OPENCODE_MYSQL_URL ? await import("./db.mysql") : null
+// Determine desired adapter from argv at module load time, before yargs runs.
+const _wantsDolt = process.argv.includes("--dolt") || !!process.env.OPENCODE_MYSQL_URL
+const _wantsDoltlite = process.argv.includes("--doltlite")
+
+// Conditional imports keep unused adapters out of the default bundle.
+const MySQLModule = _wantsDolt ? await import("./db.mysql") : null
+const DoltliteModule = _wantsDoltlite ? await import("./db.doltlite") : null
 
 // Pending migration promise for async adapters (MySQL).
 // Awaited by useAsync/transactionAsync before the first query.
 let _migrationPromise: Promise<void> | undefined
 
+function getMigrationEntries(): Journal {
+  return typeof OPENCODE_MIGRATIONS !== "undefined"
+    ? OPENCODE_MIGRATIONS
+    : migrations(path.join(import.meta.dirname, "../../migration"))
+}
+
 const Adapter = lazy((): StorageAdapter => {
-  if (MySQLModule && Flag.OPENCODE_MYSQL_URL) {
+  if (_wantsDolt && MySQLModule) {
+    const url = process.env.OPENCODE_MYSQL_URL
+    if (!url) throw new Error("OPENCODE_MYSQL_URL is not set; required for --dolt")
     log.info("opening database", { driver: "mysql" })
-    const adapter = MySQLModule.init(Flag.OPENCODE_MYSQL_URL)
+    const adapter = MySQLModule.init(url)
     const result = adapter.migrate([])
     if (result instanceof Promise) _migrationPromise = result
+    return adapter
+  }
+
+  if (_wantsDoltlite && DoltliteModule) {
+    log.info("opening database", { driver: "doltlite", path: Path })
+    const adapter = DoltliteModule.init(Path)
+    const entries = getMigrationEntries()
+    if (entries.length > 0) {
+      log.info("applying migrations", {
+        count: entries.length,
+        mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
+      })
+      if (Flag.OPENCODE_SKIP_MIGRATIONS) {
+        for (const item of entries) item.sql = "select 1;"
+      }
+      adapter.migrate(entries)
+    }
     return adapter
   }
 
@@ -113,19 +142,14 @@ const Adapter = lazy((): StorageAdapter => {
   db.run("PRAGMA cache_size = -64000")
   db.run("PRAGMA foreign_keys = ON")
 
-  const entries =
-    typeof OPENCODE_MIGRATIONS !== "undefined"
-      ? OPENCODE_MIGRATIONS
-      : migrations(path.join(import.meta.dirname, "../../migration"))
+  const entries = getMigrationEntries()
   if (entries.length > 0) {
     log.info("applying migrations", {
       count: entries.length,
       mode: typeof OPENCODE_MIGRATIONS !== "undefined" ? "bundled" : "dev",
     })
     if (Flag.OPENCODE_SKIP_MIGRATIONS) {
-      for (const item of entries) {
-        item.sql = "select 1;"
-      }
+      for (const item of entries) item.sql = "select 1;"
     }
     adapter.migrate(entries)
   }
@@ -147,11 +171,15 @@ export const Client = Object.assign(
 
 // True when the active adapter is async (MySQL). Callers that are SQLite-only
 // (e.g. JsonMigration) should gate on this before using Database.Client().
-export const isAsync = !!(MySQLModule && Flag.OPENCODE_MYSQL_URL)
+export const isAsync = _wantsDolt
+
+// True when json migration should be skipped (non-sqlite backends start fresh).
+export const skipJsonMigration = _wantsDolt || _wantsDoltlite
 
 // Pure path computation — no DB side effects.
 export function adapterPath(): string {
-  if (Flag.OPENCODE_MYSQL_URL) return Flag.OPENCODE_MYSQL_URL
+  if (_wantsDolt) return process.env.OPENCODE_MYSQL_URL ?? ""
+  if (_wantsDoltlite && DoltliteModule) return DoltliteModule.computePath(Path)
   return computePath(Path)
 }
 
@@ -255,6 +283,12 @@ export function useEffect<T>(callback: (db: TxOrDb) => T | Promise<T>): Effect.E
 // uses SELECT on DoltLite and CALL on MySQL/Dolt-server.
 export function doltCommit(message: string): Effect.Effect<void> {
   return Effect.promise(() => Promise.resolve(Adapter().doltCommit(message)))
+}
+
+// Resets the current branch to the given ref (branch name or commit hash).
+// Only supported on versioning-capable adapters (Dolt/MySQL); no-ops otherwise.
+export function doltReset(ref: string): Effect.Effect<void> {
+  return Effect.promise(() => Promise.resolve(Adapter().doltReset?.(ref)))
 }
 
 export function supportsVersioning(): boolean {

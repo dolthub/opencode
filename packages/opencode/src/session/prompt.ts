@@ -1656,7 +1656,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
       const templateCommand = yield* (cmd.execute
         ? Effect.tryPromise({
-            try: () => cmd.execute!(args, input.arguments),
+            try: () => cmd.execute!(args, input.arguments, input.sessionID),
             catch: (e) => new NamedError.Unknown({ message: e instanceof Error ? e.message : String(e) }),
           }).pipe(
             Effect.tapError((error) =>
@@ -1683,7 +1683,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const usesArgumentsPlaceholder = templateCommand.includes("$ARGUMENTS")
       let template = withArgs.replaceAll("$ARGUMENTS", input.arguments)
 
-      if (placeholders.length === 0 && !usesArgumentsPlaceholder && input.arguments.trim()) {
+      if (!cmd.execute && placeholders.length === 0 && !usesArgumentsPlaceholder && input.arguments.trim()) {
         template = template + "\n\n" + input.arguments
       }
 
@@ -1758,6 +1758,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         parts,
         variant: input.variant,
       })
+
+      if (cmd.afterExecute) {
+        const responseText = result.parts.findLast((p) => p.type === "text")?.text ?? ""
+        yield* Effect.promise(() => cmd.afterExecute!(responseText, input.sessionID))
+      }
+
       yield* bus.publish(Command.Event.Executed, {
         name: input.command,
         sessionID: input.sessionID,

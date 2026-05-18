@@ -516,19 +516,21 @@ function parseConnectionString(url: string): mysql.PoolOptions {
 }
 
 export function init(connectionString: string): StorageAdapter {
-  const pool = mysql.createPool(parseConnectionString(connectionString))
-  const mysqlDb = drizzle({ client: pool, logger: drizzleLogger }) as MySql2Database
+  const baseOptions = parseConnectionString(connectionString)
+  let pool = mysql.createPool(baseOptions)
+  let mysqlDb = drizzle({ client: pool, logger: drizzleLogger }) as MySql2Database
+  let wrappedDb = wrapMySqlDb(mysqlDb)
 
   return {
-    db: wrapMySqlDb(mysqlDb),
-    mysqlDb,
+    get db() { return wrappedDb },
+    get mysqlDb() { return mysqlDb },
     path: connectionString,
     migrate: async () => {
       const conn = await pool.getConnection()
       try {
-        for (const sql of DDL) {
-          await conn.execute(sql)
-          log.info("query", { sql })
+        for (const ddl of DDL) {
+          await conn.execute(ddl)
+          log.info("query", { sql: ddl })
         }
       } finally {
         conn.release()
@@ -542,7 +544,14 @@ export function init(connectionString: string): StorageAdapter {
       return Object.values(row)[0] as string
     },
     changeBranch: async (name: string): Promise<void> => {
-      await mysqlDb.execute(sql`CALL dolt_checkout(${name})`)
+      // Replace the pool with one pointed at database/branch so every connection
+      // in the new pool is on the correct branch from the start. Using
+      // CALL dolt_checkout() only switches one pool connection, causing FK
+      // violations when subsequent queries land on different connections.
+      const branchDb = baseOptions.database ? `${baseOptions.database}/${name}` : name
+      pool = mysql.createPool({ ...baseOptions, database: branchDb })
+      mysqlDb = drizzle({ client: pool, logger: drizzleLogger }) as MySql2Database
+      wrappedDb = wrapMySqlDb(mysqlDb)
     },
     createBranch: async (name: string, startPoint: string | null, force: boolean): Promise<void> => {
       if (!name) throw new Error("branch name must be non-empty")
@@ -560,6 +569,9 @@ export function init(connectionString: string): StorageAdapter {
       const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
       const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
+    },
+    doltReset: async (ref: string): Promise<void> => {
+      await mysqlDb.execute(sql`CALL dolt_reset('--hard', ${ref})`)
     },
     doltCommit: async (message: string): Promise<void> => {
       try {

@@ -289,6 +289,10 @@ export const RunCommand = effectCmd({
         type: "number",
         describe: "port for the local server (defaults to random port if no value provided)",
       })
+      .option("prompt", {
+        type: "string",
+        describe: "prompt to send (alternative to positional message)",
+      })
       .option("variant", {
         type: "string",
         describe: "model variant (provider-specific reasoning effort, e.g., high, max, minimal)",
@@ -306,9 +310,11 @@ export const RunCommand = effectCmd({
   handler: Effect.fn("Cli.run")(function* (args) {
     const agentSvc = yield* Agent.Service
     yield* Effect.promise(async () => {
-      let message = [...args.message, ...(args["--"] || [])]
-        .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
-        .join(" ")
+      let message = args.prompt
+        ? args.prompt
+        : [...args.message, ...(args["--"] || [])]
+            .map((arg) => (arg.includes(" ") ? `"${arg.replace(/"/g, '\\"')}"` : arg))
+            .join(" ")
 
       const directory = (() => {
         if (!args.dir) return undefined

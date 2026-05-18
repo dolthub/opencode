@@ -1,3 +1,4 @@
+import * as Log from "@opencode-ai/core/util/log"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -13,6 +14,8 @@ import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
+
+const log = Log.create({ service: "split" })
 
 type State = {
   commands: Record<string, Info>
@@ -50,7 +53,9 @@ export type Info = Omit<Schema.Schema.Type<typeof Info>, "template"> & {
   // When present, called instead of template resolution. Receives parsed argument
   // tokens and the raw argument string; returns the final prompt string or throws
   // a user-visible Error to abort execution.
-  execute?: (args: string[], rawArguments: string) => Promise<string>
+  execute?: (args: string[], rawArguments: string, sessionID: string) => Promise<string>
+  // When present, called with the LLM's response text after execution completes.
+  afterExecute?: (response: string, sessionID: string) => Promise<void>
 }
 
 export function hints(template: string) {
@@ -113,7 +118,7 @@ export const layer = Layer.effect(
         source: "command",
         template: "",
         hints: [],
-        execute: async (args: string[], rawArguments: string): Promise<string> => {
+        execute: async (args: string[], rawArguments: string, sessionID: string): Promise<string> => {
           const count = Number(args[0])
           if (!args[0] || !Number.isInteger(count) || count < 1) {
             throw new Error("split: first argument must be a positive integer (e.g. /split 3 <prompt>)")
@@ -122,10 +127,59 @@ export const layer = Layer.effect(
           if (!promptText) {
             throw new Error("split: a prompt is required after the count (e.g. /split 3 <prompt>)")
           }
-          console.log("[split] count:", count, "prompt:", promptText, "raw:", rawArguments)
+
           const uuids = Array.from({ length: count }, () => crypto.randomUUID())
-          await Promise.all(uuids.map((id) => Database.createBranch(id)))
-          return "this is a test"
+          const procs = await Promise.all(
+            uuids.map(async (id) => {
+              await Database.createBranch(id)
+              const argv = ["opencode", "run", "--dolt", "--session", sessionID, "--branch", id, "--prompt", promptText]
+              const proc = Bun.spawn(argv, {
+                stdout: "pipe",
+                stderr: "pipe",
+                env: process.env,
+                cwd: process.cwd(),
+              })
+              return { id, argv, proc }
+            }),
+          )
+
+          const branches: Record<string, { argv: string[]; exit_code: number; stdout: string; stderr: string }> = {}
+          await Promise.all(
+            procs.map(async ({ id, argv, proc }) => {
+              const [stdout, stderr, exit_code] = await Promise.all([
+                new Response(proc.stdout).text(),
+                new Response(proc.stderr).text(),
+                proc.exited,
+              ])
+              branches[id] = { argv, exit_code, stdout, stderr }
+            }),
+          )
+
+          process.stderr.write(JSON.stringify({ branches }, null, 2) + "\n")
+
+          const options: Record<string, string> = {}
+          for (const [id, result] of Object.entries(branches)) {
+            options[id] = result.stdout
+          }
+
+          return `Given a prompt:
+  ${promptText}
+
+And the following options:
+  ${JSON.stringify(options, null, 2)}
+
+What is the UUID of the best answer. Respond in the format \`{"uuid":<UUID>, "reason":<REASON>}\``
+        },
+        afterExecute: async (response: string): Promise<void> => {
+          if (!Database.supportsVersioning()) return
+          const match = response.match(/\{\s*"uuid"\s*:\s*"([^"]+)"/)
+          if (!match) {
+            process.stderr.write("split: could not parse UUID from LLM response: " + response + "\n")
+            return
+          }
+          const uuid = match[1]
+          process.stderr.write("split: resetting to branch " + uuid + "\n")
+          await Effect.runPromise(Database.doltReset(uuid))
         },
       }
 

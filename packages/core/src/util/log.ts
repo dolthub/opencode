@@ -2,7 +2,7 @@ export * as Log from "./log"
 
 import path from "path"
 import fs from "fs/promises"
-import { createWriteStream } from "fs"
+import { createWriteStream, appendFileSync } from "fs"
 import * as Global from "../global"
 import z from "zod"
 import { Glob } from "./glob"
@@ -48,6 +48,7 @@ export interface Options {
   print: boolean
   dev?: boolean
   level?: Level
+  path?: string
 }
 
 let logpath = ""
@@ -63,9 +64,11 @@ export async function init(options: Options) {
   if (options.level) level = options.level
   void cleanup(Global.Path.log)
   if (options.print) return
-  logpath = path.join(
-    Global.Path.log,
-    options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
+  logpath = path.resolve(
+    options.path ?? path.join(
+      Global.Path.log,
+      options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
+    ),
   )
   await fs.truncate(logpath).catch(() => {})
   const stream = createWriteStream(logpath, { flags: "a" })

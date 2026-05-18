@@ -31,6 +31,7 @@ import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
 import { DbCommand } from "./cli/cmd/db"
 import path from "path"
+import { readFileSync } from "fs"
 import { Global } from "@opencode-ai/core/global"
 import { JsonMigration } from "@/storage/json-migration"
 import { Database } from "@/storage/db"
@@ -86,11 +87,50 @@ const cli = yargs(args)
     describe: "run without external plugins",
     type: "boolean",
   })
+  .option("doltlite", {
+    describe: "use DoltLite storage backend",
+    type: "boolean",
+  })
+  .option("dolt", {
+    describe: "use Dolt (MySQL) storage backend; reads OPENCODE_MYSQL_URL from .env if not set",
+    type: "boolean",
+  })
   .option("branch", {
     describe: "branch to use (requires a versioning-capable storage backend)",
     type: "string",
   })
+  .option("log-to", {
+    describe: "write logs to this file path",
+    type: "string",
+  })
   .middleware(async (opts) => {
+    if (opts.dolt && opts.doltlite) {
+      process.stderr.write("Error: --dolt and --doltlite are mutually exclusive\n")
+      process.exit(1)
+    }
+
+    if (opts.dolt && !process.env.OPENCODE_MYSQL_URL) {
+      try {
+        const lines = readFileSync(path.join(process.cwd(), ".env"), "utf-8").split("\n")
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed.startsWith("#")) continue
+          const eq = trimmed.indexOf("=")
+          if (eq === -1) continue
+          const key = trimmed.slice(0, eq).trim()
+          let val = trimmed.slice(eq + 1).trim()
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1)
+          }
+          process.env[key] = val
+        }
+      } catch {}
+      if (!process.env.OPENCODE_MYSQL_URL) {
+        UI.error("--dolt requires OPENCODE_MYSQL_URL to be set in .env or environment")
+        process.exit(1)
+      }
+    }
+
     if (opts.pure) {
       process.env.OPENCODE_PURE = "1"
     }
@@ -103,6 +143,7 @@ const cli = yargs(args)
         if (Installation.isLocal()) return "DEBUG"
         return "INFO"
       })(),
+      path: opts.logTo,
     })
 
     Heap.start()
@@ -119,7 +160,7 @@ const cli = yargs(args)
     })
 
     const marker = Database.adapterPath()
-    if (!Database.isAsync && !(await Filesystem.exists(marker))) {
+    if (!Database.skipJsonMigration && !(await Filesystem.exists(marker))) {
       const tty = process.stderr.isTTY
       process.stderr.write("Performing one time database migration, may take a few minutes..." + EOL)
       const width = 36
