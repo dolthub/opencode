@@ -251,10 +251,8 @@ export function useEffect<T>(callback: (db: TxOrDb) => T | Promise<T>): Effect.E
   return Effect.sync(() => use(callback as (db: TxOrDb) => T))
 }
 
-// Delegates to the active adapter's doltCommit. No-ops on plain SQLite;
-// uses SELECT on DoltLite and CALL on MySQL/Dolt-server.
-export function doltCommit(message: string): Effect.Effect<void> {
-  return Effect.promise(() => Promise.resolve(Adapter().doltCommit(message)))
+export function commit(message: string): Effect.Effect<void> {
+  return Effect.promise(() => Promise.resolve(Adapter().commit(message)))
 }
 
 export function supportsVersioning(): boolean {

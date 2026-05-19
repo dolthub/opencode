@@ -44,6 +44,8 @@ export const dict = {
   "command.language.cycle": "Cycle language",
   "command.language.set": "Use language: {{language}}",
 
+  "command.session.commit": "Commit",
+  "command.session.commit.description": "Commit the current state with a message (/commit <message>)",
   "command.session.new": "New session",
   "command.file.open": "Open file",
   "command.tab.close": "Close tab",
@@ -455,6 +457,9 @@ export const dict = {
 
   "toast.session.listFailed.title": "Failed to load sessions for {{project}}",
   "toast.project.reloadFailed.title": "Failed to reload {{project}}",
+
+  "toast.commit.success.title": "Committed",
+  "toast.commit.failed.title": "Commit failed",
 
   "toast.update.title": "Update available",
   "toast.update.description": "A new version of OpenCode ({{version}}) is now available to install.",

@@ -11,7 +11,7 @@ export interface StorageAdapter {
   readonly path: string
   migrate(entries: Journal): void | Promise<void>
   close(): void | Promise<void>
-  doltCommit(message: string): void | Promise<void>
+  commit(message: string): void | Promise<void>
   supportsVersioning(): boolean
   createBranch(name: string, startPoint: string | null, force: boolean): void | Promise<void>
   changeBranch(name: string): void | Promise<void>

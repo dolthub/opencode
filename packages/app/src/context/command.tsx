@@ -79,6 +79,7 @@ export interface CommandOption {
   category?: string
   keybind?: KeybindConfig
   slash?: string
+  needsArgs?: boolean
   suggested?: boolean
   disabled?: boolean
   onSelect?: (source?: "palette" | "keybind" | "slash") => void

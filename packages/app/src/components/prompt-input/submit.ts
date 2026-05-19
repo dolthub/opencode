@@ -452,6 +452,28 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       return
     }
 
+    if (text.startsWith("/commit ") || text === "/commit") {
+      const message = text.slice("/commit".length).trim()
+      if (!message) return
+      clearInput()
+      client.session
+        .commit({
+          sessionID: session.id,
+          message,
+        })
+        .then(() => {
+          showToast({ title: language.t("toast.commit.success.title"), variant: "success" })
+        })
+        .catch((err) => {
+          showToast({
+            title: language.t("toast.commit.failed.title"),
+            description: errorMessage(err),
+          })
+          restoreInput()
+        })
+      return
+    }
+
     if (text.startsWith("/")) {
       const [cmdName, ...args] = text.split(" ")
       const commandName = cmdName.slice(1)

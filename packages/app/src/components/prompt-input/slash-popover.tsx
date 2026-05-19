@@ -15,6 +15,7 @@ export interface SlashCommand {
   keybind?: string
   type: "builtin" | "custom"
   source?: "command" | "mcp" | "skill"
+  needsArgs?: boolean
 }
 
 type PromptPopoverProps = {

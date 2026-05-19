@@ -23,7 +23,7 @@ export function init(filePath: string): StorageAdapter {
       ;(db as any).dialect.migrate(metas, (db as any).session, {})
     },
     close: () => sqlite.close(),
-    doltCommit: () => {},
+    commit: () => {},
     supportsVersioning: () => false,
     createBranch: () => { throw new Error("not implemented") },
     changeBranch: () => { throw new Error("not implemented") },

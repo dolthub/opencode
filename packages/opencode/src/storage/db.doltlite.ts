@@ -204,7 +204,7 @@ export function init(filePath: string): StorageAdapter {
     changeBranch: () => { throw new Error("not implemented") },
     currentBranch: () => { throw new Error("not implemented") },
     hasBranch: () => { throw new Error("not implemented") },
-    doltCommit: (message: string): void => {
+    commit: (message: string): void => {
       try {
         client.prepare("SELECT dolt_commit('-Am', ?)").get(message)
       } catch (e) {

@@ -382,6 +382,14 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
 
   const sessionCmds = () => [
     sessionCommand({
+      id: "session.commit",
+      title: language.t("command.session.commit"),
+      description: language.t("command.session.commit.description"),
+      slash: "commit",
+      needsArgs: true,
+      onSelect: () => {},
+    }),
+    sessionCommand({
       id: "session.new",
       title: language.t("command.session.new"),
       keybind: "mod+shift+s",

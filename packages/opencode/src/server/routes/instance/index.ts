@@ -133,6 +133,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket, opts?: CorsOptions): H
     app.post(SessionPaths.shell, (c) => handler(c.req.raw, context))
     app.post(SessionPaths.revert, (c) => handler(c.req.raw, context))
     app.post(SessionPaths.unrevert, (c) => handler(c.req.raw, context))
+    app.post(SessionPaths.commit, (c) => handler(c.req.raw, context))
     app.post(SessionPaths.permissions, (c) => handler(c.req.raw, context))
     app.delete(SessionPaths.deleteMessage, (c) => handler(c.req.raw, context))
     app.delete(SessionPaths.deletePart, (c) => handler(c.req.raw, context))

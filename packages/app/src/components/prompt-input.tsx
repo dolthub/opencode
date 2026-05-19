@@ -627,6 +627,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         description: opt.description,
         keybind: opt.keybind,
         type: "builtin" as const,
+        needsArgs: opt.needsArgs,
       }))
 
     const custom = sync.data.command.map((cmd) => ({
@@ -646,7 +647,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     closePopover()
     const images = imageAttachments()
 
-    if (cmd.type === "custom") {
+    if (cmd.type === "custom" || cmd.needsArgs) {
       const text = `/${cmd.trigger} `
       setEditorText(text)
       prompt.set([{ type: "text", content: text, start: 0, end: text.length }, ...images], text.length)

@@ -27,6 +27,7 @@ import { zodObject } from "@/util/effect-zod"
 import { Bus } from "@/bus"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { jsonRequest, runRequest } from "./trace"
+import * as Database from "@/storage/db"
 
 const log = Log.create({ service: "server" })
 
@@ -612,6 +613,45 @@ export const SessionRoutes = lazy(() =>
             auto: body.auto,
           })
           yield* prompt.loop({ sessionID })
+          return true
+        }),
+    )
+    .post(
+      "/:sessionID/commit",
+      describeRoute({
+        summary: "Commit storage",
+        description: "Commit the current state of the versioned storage with the given message.",
+        operationId: "session.commit",
+        responses: {
+          200: {
+            description: "Committed",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          message: z.string(),
+        }),
+      ),
+      async (c) =>
+        jsonRequest("SessionRoutes.commit", c, function* () {
+          if (!Database.supportsVersioning())
+            throw new NamedError.Unknown({ message: "Storage does not support versioning" })
+          const { message } = c.req.valid("json")
+          yield* Database.commit(message)
           return true
         }),
     )
