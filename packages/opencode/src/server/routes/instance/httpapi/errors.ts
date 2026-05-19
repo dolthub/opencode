@@ -16,3 +16,15 @@ export function notFound(message: string) {
     data: { message },
   })
 }
+
+export class ApiCommitError extends Schema.ErrorClass<ApiCommitError>("CommitError")(
+  {
+    name: Schema.Literal("CommitError"),
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
+
+export function commitError(message: string) {
+  return new ApiCommitError({ name: "CommitError", message })
+}

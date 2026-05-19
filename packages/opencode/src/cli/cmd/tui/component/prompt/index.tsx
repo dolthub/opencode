@@ -945,6 +945,22 @@ export function Prompt(props: PromptProps) {
         command: inputText,
       })
       setStore("mode", "normal")
+    } else if (inputText.startsWith("/commit")) {
+      const message = inputText.slice("/commit".length).trim()
+      if (!message) {
+        toast.show({ message: "Usage: /commit <message>", variant: "error" })
+        return false
+      }
+      try {
+        await sdk.client.session.commit({ sessionID, message }, { throwOnError: true })
+        toast.show({ message: "Changes committed successfully", variant: "success" })
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to commit changes")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
     } else if (
       inputText.startsWith("/") &&
       iife(() => {

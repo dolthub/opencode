@@ -59,6 +59,7 @@ export function hints(template: string) {
 export const Default = {
   INIT: "init",
   REVIEW: "review",
+  COMMIT: "commit",
 } as const
 
 export interface Interface {
@@ -98,6 +99,15 @@ export const layer = Layer.effect(
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      }
+      commands[Default.COMMIT] = {
+        name: Default.COMMIT,
+        description: "commit versioned changes with a message",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

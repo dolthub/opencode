@@ -562,14 +562,7 @@ export function init(connectionString: string): StorageAdapter {
       return Number(Object.values(row)[0]) > 0
     },
     commit: async (message: string): Promise<void> => {
-      try {
-        await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        if (!msg.toLowerCase().includes("nothing to commit")) {
-          log.warn("dolt_commit failed", { error: msg })
-        }
-      }
+      await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
     },
   }
 }

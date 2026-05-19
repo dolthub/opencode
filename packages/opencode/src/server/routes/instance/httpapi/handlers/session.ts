@@ -17,7 +17,9 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
+import * as Database from "@/storage/db"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { commitError } from "../errors"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -312,6 +314,26 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* revertSvc.unrevert({ sessionID: ctx.params.sessionID })
     })
 
+    const commit = Effect.fn("SessionHttpApi.commit")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { message: string }
+    }) {
+      if (!Database.supportsVersioning())
+        return yield* Effect.fail(commitError("Storage does not support versioning"))
+      yield* Database.commit(ctx.payload.message).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return true
+    })
+
     const permissionRespond = Effect.fn("SessionHttpApi.permissionRespond")(function* (ctx: {
       params: { permissionID: PermissionID }
       payload: typeof PermissionResponsePayload.Type
@@ -376,6 +398,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("shell", shell)
       .handle("revert", revert)
       .handle("unrevert", unrevert)
+      .handle("commit", commit)
       .handle("permissionRespond", permissionRespond)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)

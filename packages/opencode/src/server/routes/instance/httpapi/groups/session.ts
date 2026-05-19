@@ -15,7 +15,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, Op
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
-import { ApiNotFoundError } from "../errors"
+import { ApiCommitError, ApiNotFoundError } from "../errors"
 import { described } from "./metadata"
 
 const root = "/session"
@@ -364,6 +364,18 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.unrevert",
             summary: "Restore reverted messages",
             description: "Restore all previously reverted messages in a session.",
+          }),
+        ),
+        HttpApiEndpoint.post("commit", SessionPaths.commit, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ message: Schema.String }),
+          success: described(Schema.Boolean, "Committed"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.commit",
+            summary: "Commit storage",
+            description: "Commit the current state of the versioned storage with the given message.",
           }),
         ),
         HttpApiEndpoint.post("permissionRespond", SessionPaths.permissions, {

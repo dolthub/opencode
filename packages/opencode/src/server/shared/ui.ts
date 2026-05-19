@@ -77,6 +77,16 @@ export function serveEmbeddedUIEffect(
   )
 }
 
+export function serveLocalUIEffect(requestPath: string, dir: string, fs: AppFileSystem.Interface) {
+  const rel = requestPath.replace(/^\//, "") || "index.html"
+  const tryFile = (file: string) =>
+    fs.readFile(`${dir}/${file}`).pipe(Effect.map((body) => embeddedUIResponse(file, body)))
+  return tryFile(rel).pipe(
+    Effect.catchReason("PlatformError", "NotFound", () => tryFile("index.html")),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(notFound())),
+  )
+}
+
 export function serveUIEffect(
   request: HttpServerRequest.HttpServerRequest,
   services: { fs: AppFileSystem.Interface; client: HttpClient.HttpClient },
@@ -85,6 +95,7 @@ export function serveUIEffect(
     const embeddedWebUI = yield* Effect.promise(() => embeddedUI())
     const path = new URL(request.url, "http://localhost").pathname
 
+    if (Flag.OPENCODE_WEB_UI_DIR) return yield* serveLocalUIEffect(path, Flag.OPENCODE_WEB_UI_DIR, services.fs)
     if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
 
     const response = yield* services.client.execute(
