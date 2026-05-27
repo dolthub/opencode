@@ -961,6 +961,29 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
+    } else if (inputText.startsWith("/log")) {
+      const rest = inputText.slice("/log".length).trim()
+      if (rest) {
+        toast.show({ message: "Usage: /log  (no arguments)", variant: "error" })
+        return false
+      }
+      try {
+        const res = await sdk.client.session.log({ sessionID }, { throwOnError: true })
+        const entries = (res.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
+        const body =
+          entries.length === 0
+            ? "No commits on this branch."
+            : `Commits on this branch (newest first):\n${entries
+                .map((e) => `  ${e.commitHash.slice(0, 8)}  ${e.date}  ${e.message}`)
+                .join("\n")}`
+        sync.session.appendLocalSystem(sessionID, body, "/log")
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to get commit log")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
     } else if (inputText.startsWith("/branch")) {
       const rest = inputText.slice("/branch".length).trim()
       if (rest) {
@@ -969,9 +992,19 @@ export function Prompt(props: PromptProps) {
       }
       try {
         const res = await sdk.client.session.branches({ sessionID }, { throwOnError: true })
-        const list = (res.data ?? []) as string[]
-        const body = list.length === 0 ? "(none)" : list.map((b) => `  • ${b}`).join("\n")
-        toast.show({ message: `Branches forked from base:\n${body}`, variant: "info" })
+        const data = (res.data ?? { current: null, branches: [] }) as {
+          current: string | null
+          branches: string[]
+        }
+        const list = data.branches
+        const current = data.current
+        const body =
+          list.length === 0
+            ? "No branches forked from this project's base."
+            : `Branches forked from this project's base:\n${list
+                .map((b) => (b === current ? `► ${b}` : `  • ${b}`))
+                .join("\n")}`
+        sync.session.appendLocalSystem(sessionID, body, "/branch")
       } catch (error) {
         const msg =
           (error as any)?.message ??
@@ -979,6 +1012,33 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
+    } else if (inputText.startsWith("/checkout")) {
+      const rest = inputText.slice("/checkout".length).trim()
+      const branch = rest.split(/\s+/)[0]
+      if (!branch || rest.includes(" ") || rest.includes("\n")) {
+        toast.show({ message: "Usage: /checkout <branch_name>  (single word)", variant: "error" })
+        return false
+      }
+      try {
+        await sdk.client.session.checkoutBranch({ sessionID, branch }, { throwOnError: true })
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to checkout branch")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      // Stay on the current view. Just clear the input and refresh the chat
+      // history from the database — the new branch may have a different
+      // message history.
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      void sync.session.rebuild(sessionID).catch(() => {})
+      toast.show({ message: `Checked out branch '${branch}'`, variant: "success" })
+      return true
     } else if (inputText.startsWith("/new")) {
       const rest = inputText.slice("/new".length).trim()
       const branch = rest.split(/\s+/)[0]

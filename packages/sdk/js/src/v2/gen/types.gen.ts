@@ -444,7 +444,17 @@ export type AssistantMessage = {
   finish?: string
 }
 
-export type Message = UserMessage | AssistantMessage
+export type SystemMessage = {
+  id: string
+  sessionID: string
+  role: "system"
+  time: {
+    created: number
+  }
+  source?: string
+}
+
+export type Message = UserMessage | AssistantMessage | SystemMessage
 
 export type TextPart = {
   id: string

@@ -27,6 +27,7 @@ import type {
   AssistantMessage,
   Part,
   Provider,
+  SystemMessage,
   ToolPart,
   UserMessage,
   TextPart,
@@ -878,7 +879,9 @@ export function Session() {
           const sessionMessages = messages()
           const transcript = formatTranscript(
             sessionData,
-            sessionMessages.map((msg) => ({ info: msg, parts: sync.data.part[msg.id] ?? [] })),
+            sessionMessages
+              .filter((msg) => msg.role !== "system")
+              .map((msg) => ({ info: msg as Exclude<typeof msg, { role: "system" }>, parts: sync.data.part[msg.id] ?? [] })),
             {
               thinking: showThinking(),
               toolDetails: showDetails(),
@@ -923,7 +926,9 @@ export function Session() {
 
           const transcript = formatTranscript(
             sessionData,
-            sessionMessages.map((msg) => ({ info: msg, parts: sync.data.part[msg.id] ?? [] })),
+            sessionMessages
+              .filter((msg) => msg.role !== "system")
+              .map((msg) => ({ info: msg as Exclude<typeof msg, { role: "system" }>, parts: sync.data.part[msg.id] ?? [] })),
             {
               thinking: options.thinking,
               toolDetails: options.toolDetails,
@@ -1169,6 +1174,13 @@ export function Session() {
                         parts={sync.data.part[message.id] ?? []}
                       />
                     </Match>
+                    <Match when={message.role === "system"}>
+                      <SystemMessage
+                        index={index()}
+                        message={message as SystemMessage}
+                        parts={sync.data.part[message.id] ?? []}
+                      />
+                    </Match>
                   </Switch>
                 )}
               </For>
@@ -1347,6 +1359,38 @@ function UserMessage(props: {
         />
       </Show>
     </>
+  )
+}
+
+function SystemMessage(props: { message: SystemMessage; parts: Part[]; index: number }) {
+  const { theme } = useTheme()
+  const lines = createMemo(() =>
+    props.parts
+      .map((p) => (p.type === "text" ? p.text : null))
+      .filter((x): x is string => Boolean(x))
+      .join("\n\n")
+      .split("\n"),
+  )
+  const label = createMemo(() => (props.message.source ? `[${props.message.source}]` : "[system]"))
+  return (
+    <Show when={lines().length > 0}>
+      <box
+        id={props.message.id}
+        marginTop={props.index === 0 ? 0 : 1}
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        backgroundColor={theme.backgroundPanel}
+        flexShrink={0}
+      >
+        <text fg={theme.textMuted}>{label()}</text>
+        <For each={lines()}>
+          {(line) => (
+            <text fg={line.startsWith("►") ? theme.primary : theme.text}>{line}</text>
+          )}
+        </For>
+      </box>
+    </Show>
   )
 }
 

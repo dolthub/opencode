@@ -451,6 +451,11 @@ export interface Interface {
   readonly children: (parentID: SessionID) => Effect.Effect<Info[]>
   readonly remove: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly updateMessage: <T extends MessageV2.Info>(msg: T) => Effect.Effect<T>
+  readonly appendSystem: (input: {
+    sessionID: SessionID
+    text: string
+    source?: string
+  }) => Effect.Effect<MessageV2.System>
   readonly removeMessage: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<MessageID>
   readonly removePart: (input: { sessionID: SessionID; messageID: MessageID; partID: PartID }) => Effect.Effect<PartID>
   readonly getPart: (input: {
@@ -618,6 +623,33 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
         })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    // Append a chat-style message that opencode itself generated (slash command
+    // output, hooks, etc). System messages render in the TUI but are skipped
+    // when building LLM context.
+    const appendSystem = Effect.fn("Session.appendSystem")(function* (input: {
+      sessionID: SessionID
+      text: string
+      source?: string
+    }) {
+      const messageID = MessageID.ascending()
+      const info: MessageV2.System = {
+        id: messageID,
+        sessionID: input.sessionID,
+        role: "system",
+        time: { created: Date.now() },
+        source: input.source,
+      }
+      yield* updateMessage(info)
+      yield* updatePart({
+        id: PartID.ascending(),
+        messageID,
+        sessionID: input.sessionID,
+        type: "text",
+        text: input.text,
+      })
+      return info
+    })
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db((d) =>
@@ -830,6 +862,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       children,
       remove,
       updateMessage,
+      appendSystem,
       removeMessage,
       removePart,
       updatePart,

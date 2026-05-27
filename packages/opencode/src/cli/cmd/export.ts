@@ -206,13 +206,15 @@ function sanitize(data: { info: Session.Info; messages: MessageV2.WithParts[] })
                     diffs: diff("message-diff", msg.info.summary.diffs),
                   },
             }
-          : {
-              ...msg.info,
-              path: {
-                cwd: redact("cwd", msg.info.id, msg.info.path.cwd),
-                root: redact("root", msg.info.id, msg.info.path.root),
+          : msg.info.role === "system"
+            ? msg.info
+            : {
+                ...msg.info,
+                path: {
+                  cwd: redact("cwd", msg.info.id, msg.info.path.cwd),
+                  root: redact("root", msg.info.id, msg.info.path.root),
+                },
               },
-            },
       parts: msg.parts.map(partFn),
     })),
   }

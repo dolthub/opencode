@@ -613,6 +613,16 @@ export function init(connectionString: string): StorageAdapter {
       }
       return result
     },
+    getCommitLog: async () => {
+      const [rows] = await mysqlDb.execute(
+        sql`SELECT commit_hash, date, message FROM dolt_log ORDER BY commit_order desc`,
+      )
+      return (rows as Array<{ commit_hash: string; date: Date; message: string }>).map((row) => ({
+        commitHash: row.commit_hash,
+        date: row.date,
+        message: row.message,
+      }))
+    },
     commit: async (message: string): Promise<void> => {
       try {
         await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)

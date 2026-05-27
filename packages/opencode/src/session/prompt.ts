@@ -261,7 +261,9 @@ export const layer = Layer.effect(
         return input.messages
       }
 
-      const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant")
+      const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant") as
+        | (MessageV2.WithParts & { info: MessageV2.Assistant })
+        | undefined
       if (input.agent.name !== "plan" && assistantMessage?.info.agent === "plan") {
         const ctx = yield* InstanceState.context
         const plan = Session.plan(input.session, ctx)

@@ -93,7 +93,9 @@ export const SessionPaths = {
   unrevert: `${root}/:sessionID/unrevert`,
   commit: `${root}/:sessionID/commit`,
   newBranch: `${root}/:sessionID/new-branch`,
+  checkoutBranch: `${root}/:sessionID/checkout`,
   branches: `${root}/:sessionID/branches`,
+  log: `${root}/:sessionID/log`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -393,9 +395,28 @@ export const SessionApi = HttpApi.make("session")
               "Switch the session onto a new branch forked from main. The session's branch field is updated and committed before the branch is created.",
           }),
         ),
+        HttpApiEndpoint.post("checkoutBranch", SessionPaths.checkoutBranch, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ branch: Schema.String }),
+          success: described(Schema.Boolean, "Branch checked out"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.checkoutBranch",
+            summary: "Switch the session to an existing branch",
+            description:
+              "Update the session's branch field to the supplied existing branch and switch the connection onto it.",
+          }),
+        ),
         HttpApiEndpoint.get("branches", SessionPaths.branches, {
           params: { sessionID: SessionID },
-          success: described(Schema.Array(Schema.String), "Branches forked from the project's base branch"),
+          success: described(
+            Schema.Struct({
+              current: Schema.NullOr(Schema.String),
+              branches: Schema.Array(Schema.String),
+            }),
+            "Branches forked from the project's base branch, with the session's current branch marked",
+          ),
           error: ApiCommitError,
         }).annotateMerge(
           OpenApi.annotations({
@@ -403,6 +424,26 @@ export const SessionApi = HttpApi.make("session")
             summary: "List session branches",
             description:
               "Returns the names of branches whose history contains the commit at the head of this project's base branch.",
+          }),
+        ),
+        HttpApiEndpoint.get("log", SessionPaths.log, {
+          params: { sessionID: SessionID },
+          success: described(
+            Schema.Array(
+              Schema.Struct({
+                commitHash: Schema.String,
+                date: Schema.String,
+                message: Schema.String,
+              }),
+            ),
+            "Commit log for the active branch",
+          ),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.log",
+            summary: "Get commit log",
+            description: "Returns the dolt commit log for the active branch, newest first.",
           }),
         ),
         HttpApiEndpoint.post("permissionRespond", SessionPaths.permissions, {

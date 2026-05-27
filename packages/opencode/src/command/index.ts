@@ -62,6 +62,8 @@ export const Default = {
   COMMIT: "commit",
   NEW: "new",
   BRANCH: "branch",
+  CHECKOUT: "checkout",
+  LOG: "log",
 } as const
 
 export interface Interface {
@@ -123,6 +125,24 @@ export const layer = Layer.effect(
       commands[Default.BRANCH] = {
         name: Default.BRANCH,
         description: "list branches forked from this project's base branch",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: [],
+      }
+      commands[Default.CHECKOUT] = {
+        name: Default.CHECKOUT,
+        description: "switch the session to an existing branch",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.LOG] = {
+        name: Default.LOG,
+        description: "show the commit log for the current branch",
         source: "command",
         get template() {
           return ""

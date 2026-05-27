@@ -503,6 +503,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const last = messages.at(-1)
           if (!last) return "idle"
           if (last.role === "user") return "working"
+          if (last.role === "system") return "idle"
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {
@@ -527,6 +528,36 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
           fullSyncedSessions.add(sessionID)
+        },
+        // Inject an ephemeral system-style chat entry visible only to this
+        // client. Used by slash commands that produce chat-style output
+        // (/branch, /log, etc.) where the output is NOT persisted to the
+        // database and NOT included in LLM context. It survives until the
+        // next sync() / rebuild() / page reload.
+        appendLocalSystem(sessionID: string, text: string, source?: string) {
+          const messageID = `local-system-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          const partID = `local-system-part-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+          const info = {
+            id: messageID,
+            sessionID,
+            role: "system" as const,
+            time: { created: Date.now() },
+            source,
+          }
+          const part = {
+            id: partID,
+            messageID,
+            sessionID,
+            type: "text" as const,
+            text,
+          }
+          setStore(
+            produce((draft) => {
+              if (!draft.message[sessionID]) draft.message[sessionID] = []
+              draft.message[sessionID].push(info as unknown as Message)
+              draft.part[messageID] = [part as unknown as Part]
+            }),
+          )
         },
         // Force a re-fetch of a session's messages/parts/todo/diff from the
         // server, bypassing the one-shot cache used by sync(). Use this after

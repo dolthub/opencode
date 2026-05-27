@@ -309,8 +309,16 @@ export async function hasCommitInHistory(branch: string, commit: string): Promis
   return Adapter().hasCommitInHistory(branch, commit)
 }
 
+export async function currentBranch(): Promise<string> {
+  return Adapter().currentBranch()
+}
+
 export async function listBranchesWithBase(baseBranch: string): Promise<string[]> {
   return Adapter().listBranchesWithBase(baseBranch)
+}
+
+export async function getCommitLog() {
+  return Adapter().getCommitLog()
 }
 
 export async function merge(branch: string, squash: boolean = false): Promise<void> {

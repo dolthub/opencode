@@ -21,5 +21,12 @@ export interface StorageAdapter {
   hasCommitInHistory(branch: string, commit: string): boolean | Promise<boolean>
   isDirty(): boolean | Promise<boolean>
   listBranchesWithBase(baseBranch: string): string[] | Promise<string[]>
+  getCommitLog(): CommitLogEntry[] | Promise<CommitLogEntry[]>
   merge(branch: string, squash?: boolean): void | Promise<void>
+}
+
+export interface CommitLogEntry {
+  commitHash: string
+  date: Date
+  message: string
 }

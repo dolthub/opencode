@@ -236,7 +236,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* revertSvc.cleanup(yield* SessionError.mapStorageNotFound(session.get(ctx.params.sessionID)))
       const messages = yield* session.messages({ sessionID: ctx.params.sessionID })
       const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      const lastUserInfo = messages.findLast((message) => message.info.role === "user")?.info as
+        | MessageV2.User
+        | undefined
+      const currentAgent = lastUserInfo?.agent ?? defaultAgent
 
       yield* compactSvc.create({
         sessionID: ctx.params.sessionID,
@@ -335,6 +338,27 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const log = Effect.fn("SessionHttpApi.log")(function* (_ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const entries = yield* Effect.promise(() => Database.getCommitLog()).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return entries.map((e) => ({
+        commitHash: e.commitHash,
+        date: e.date instanceof Date ? e.date.toISOString() : String(e.date),
+        message: e.message,
+      }))
+    })
+
     const branches = Effect.fn("SessionHttpApi.branches")(function* (ctx: {
       params: { sessionID: SessionID }
     }) {
@@ -370,7 +394,44 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return Effect.fail(commitError(msg))
         }),
       )
-      return list
+      // Ask the storage which branch the connection is actually on right now
+      // — this is the live truth, regardless of what session.branch records.
+      const current = yield* Effect.promise(() => Database.currentBranch()).pipe(
+        Effect.catchCause(() => Effect.succeed(null as string | null)),
+      )
+      return { current, branches: list }
+    })
+
+    const checkoutBranch = Effect.fn("SessionHttpApi.checkoutBranch")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { branch: string }
+    }) {
+      const sessionID = ctx.params.sessionID
+      const branch = ctx.payload.branch.trim()
+      if (!branch) {
+        return yield* Effect.fail(commitError("Branch name must be a non-empty string"))
+      }
+      const exists = yield* Effect.promise(() => Database.hasBranch(branch))
+      if (!exists) {
+        return yield* Effect.fail(commitError(`No branch named "${branch}" exists`))
+      }
+      yield* Effect.promise(() => Database.changeBranch("main"))
+      yield* Effect.promise(() =>
+        Database.useAsync((db) => db.update(SessionTable).set({ branch }).where(eq(SessionTable.id, sessionID))),
+      )
+      yield* Database.commit(`checkout session ${sessionID} onto branch ${branch}`).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      yield* Effect.promise(() => Database.changeBranch(branch))
+      return true
     })
 
     const newBranch = Effect.fn("SessionHttpApi.newBranch")(function* (ctx: {
@@ -495,7 +556,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("unrevert", unrevert)
       .handle("commit", commit)
       .handle("newBranch", newBranch)
+      .handle("checkoutBranch", checkoutBranch)
       .handle("branches", branches)
+      .handle("log", log)
       .handle("permissionRespond", permissionRespond)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)

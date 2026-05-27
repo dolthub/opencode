@@ -206,6 +206,7 @@ export function init(filePath: string): StorageAdapter {
     hasBranch: () => { throw new Error("not implemented") },
     hasCommitInHistory: () => { throw new Error("not implemented") },
     listBranchesWithBase: () => { throw new Error("not implemented") },
+    getCommitLog: () => { throw new Error("not implemented") },
     commit: (message: string): void => {
       client.prepare("SELECT dolt_commit('-Am', ?)").get(message)
     },
