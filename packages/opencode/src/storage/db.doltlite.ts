@@ -199,13 +199,20 @@ export function init(filePath: string): StorageAdapter {
       log.info("migrations complete", { ran, skipped })
     },
     close: () => sqlite.close(),
-    supportsVersioning: () => true,
     createBranch: () => { throw new Error("not implemented") },
+    checkoutNew: () => { throw new Error("not implemented") },
     changeBranch: () => { throw new Error("not implemented") },
     currentBranch: () => { throw new Error("not implemented") },
     hasBranch: () => { throw new Error("not implemented") },
+    hasCommitInHistory: () => { throw new Error("not implemented") },
+    listBranchesWithBase: () => { throw new Error("not implemented") },
     commit: (message: string): void => {
       client.prepare("SELECT dolt_commit('-Am', ?)").get(message)
     },
+    commitEmpty: () => {
+      throw new Error("not implemented")
+    },
+    isDirty: () => { throw new Error("not implemented") },
+    merge: () => { throw new Error("not implemented") },
   }
 }

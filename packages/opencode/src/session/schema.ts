@@ -1,13 +1,16 @@
 import { Schema } from "effect"
+import z from "zod"
 
 import { Identifier } from "@/id/id"
 import { zod, ZodOverride } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 
-export const SessionID = Schema.String.annotate({ [ZodOverride]: Identifier.schema("session") }).pipe(
+export const SESSION_SUFFIX = "_session"
+
+export const SessionID = Schema.String.annotate({ [ZodOverride]: z.string().endsWith(SESSION_SUFFIX) }).pipe(
   Schema.brand("SessionID"),
   withStatics((s) => ({
-    descending: (id?: string) => s.make(Identifier.descending("session", id)),
+    forProject: (projectId: string) => s.make(`${projectId}${SESSION_SUFFIX}`),
     zod: zod(s),
   })),
 )

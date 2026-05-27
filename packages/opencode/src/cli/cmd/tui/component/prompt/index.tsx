@@ -961,6 +961,55 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
+    } else if (inputText.startsWith("/branch")) {
+      const rest = inputText.slice("/branch".length).trim()
+      if (rest) {
+        toast.show({ message: "Usage: /branch  (no arguments yet)", variant: "error" })
+        return false
+      }
+      try {
+        const res = await sdk.client.session.branches({ sessionID }, { throwOnError: true })
+        const list = (res.data ?? []) as string[]
+        const body = list.length === 0 ? "(none)" : list.map((b) => `  • ${b}`).join("\n")
+        toast.show({ message: `Branches forked from base:\n${body}`, variant: "info" })
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to list branches")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+    } else if (inputText.startsWith("/new")) {
+      const rest = inputText.slice("/new".length).trim()
+      const branch = rest.split(/\s+/)[0]
+      if (!branch || rest.includes(" ") || rest.includes("\n")) {
+        toast.show({ message: "Usage: /new <branch_name>  (single word)", variant: "error" })
+        return false
+      }
+      try {
+        await sdk.client.session.newBranch({ sessionID, branch }, { throwOnError: true })
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to create branch")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      // Reset the TUI to a fresh state: clear the input, drop any open
+      // dialog, and navigate back to the home route so the new branch
+      // starts on a clean screen.
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      dialog.clear()
+      route.navigate({ type: "home" })
+      // Drop the cached chat history for this session and re-fetch from the
+      // database — the new branch may have different (or no) messages.
+      void sync.session.rebuild(sessionID).catch(() => {})
+      toast.show({ message: `Switched to new branch '${branch}'`, variant: "success" })
+      return true
     } else if (
       inputText.startsWith("/") &&
       iife(() => {

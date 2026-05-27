@@ -4,6 +4,9 @@ import { Database } from "@/storage/db"
 import { eq } from "drizzle-orm"
 import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
+import { SessionID } from "../session/schema"
+import { Slug } from "@opencode-ai/core/util/slug"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import * as Log from "@opencode-ai/core/util/log"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { BusEvent } from "@/bus/bus-event"
@@ -196,10 +199,89 @@ export const layer: Layer.Layer<
     const fromDirectory = Effect.fn("Project.fromDirectory")(function* (directory: string) {
       log.info("fromDirectory", { directory })
 
-      // Phase 1: discover git info
+      // Phase 0: resolve project_id from .opencode/project.json and/or --project-id arg.
+      // ".opencode" is already opencode's per-project config DIRECTORY, so the file
+      // lives inside it as project.json to avoid colliding with that convention.
+      const opencodeFilePath = pathSvc.join(directory, ".opencode", "project.json")
+      const fileExists = yield* fs.existsSafe(opencodeFilePath)
+      // Print a nicely formatted user-facing message to stderr (always visible,
+      // since worker stderr is inherited by the parent), then fail the effect.
+      // We deliberately avoid process.exit — that kills the worker thread but
+      // leaves the TUI parent waiting on an RPC response, hanging the process.
+      const userError = (tag: string, lines: string[]) => {
+        process.stderr.write(["", ...lines, "", ""].join("\n"))
+        return Effect.die(new Error(tag))
+      }
+      let fileProjectId: string | undefined
+      if (fileExists) {
+        const contents = yield* fs.readFileString(opencodeFilePath).pipe(
+          Effect.catch((err) =>
+            userError("project_file_unreadable", [
+              "Error: Could not read project file",
+              "",
+              `  ${opencodeFilePath}`,
+              `    ${err instanceof Error ? err.message : String(err)}`,
+              "",
+              "Check the file's permissions, or delete it to let opencode re-create it.",
+            ]),
+          ),
+        )
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(contents)
+        } catch (err) {
+          return yield* userError("project_file_invalid_json", [
+            "Error: Could not parse project file as JSON",
+            "",
+            `  ${opencodeFilePath}`,
+            `    ${err instanceof Error ? err.message : String(err)}`,
+            "",
+            "Fix the JSON syntax, or delete the file to let opencode re-create it.",
+          ])
+        }
+        const candidate = (parsed as { project_id?: unknown })?.project_id
+        if (typeof candidate !== "string" || candidate.length === 0) {
+          return yield* userError("project_file_missing_project_id", [
+            `Error: Project file is missing the "project_id" string field`,
+            "",
+            `  ${opencodeFilePath}`,
+            "",
+            'Add a top-level "project_id" string to the file, or delete it to let opencode re-create it.',
+          ])
+        }
+        fileProjectId = candidate
+      }
+      const argProjectId = process.env.OPENCODE_PROJECT_ID || undefined
+
+      if (fileProjectId && argProjectId && fileProjectId !== argProjectId) {
+        return yield* userError("project_id_mismatch", [
+          "Error: Project id mismatch",
+          "",
+          `  ${opencodeFilePath}`,
+          `    file value:   "${fileProjectId}"`,
+          `    --project-id: "${argProjectId}"`,
+          "",
+          "To resolve, do one of the following:",
+          `  • Change the value of --project-id to "${fileProjectId}"`,
+          `  • Remove the --project-id parameter from the command line`,
+          `  • Edit the file so "project_id" is "${argProjectId}"`,
+          `  • Delete the file (it will be re-created):  rm "${opencodeFilePath}"`,
+        ])
+      }
+      const explicitProjectId = fileProjectId ?? argProjectId
+
+      // Phase 1: discover git info, or short-circuit when an explicit id is provided.
       type DiscoveryResult = { id: ProjectID; worktree: string; sandbox: string; vcs: Info["vcs"] }
 
       const data: DiscoveryResult = yield* Effect.gen(function* () {
+        if (explicitProjectId) {
+          return {
+            id: ProjectID.make(explicitProjectId),
+            worktree: directory,
+            sandbox: directory,
+            vcs: fakeVcs,
+          }
+        }
         const dotgitMatches = yield* fs.up({ targets: [".git"], start: directory }).pipe(Effect.orDie)
         const dotgit = dotgitMatches[0]
 
@@ -275,10 +357,48 @@ export const layer: Layer.Layer<
         return { id, sandbox, worktree, vcs: "git" as const }
       })
 
+      // No fallback to ProjectID.global. If neither the file, the arg, nor git
+      // discovery produced a real id, fail loudly.
+      if (data.id === ProjectID.global) {
+        return yield* userError("project_id_unresolved", [
+          "Error: Could not determine a project id",
+          "",
+          `  ${directory}`,
+          "",
+          "To resolve, do one of the following:",
+          "  • Pass --project-id <id> on the command line",
+          `  • Create a project file at ${opencodeFilePath} with contents like:`,
+          '      { "project_id": "<id>" }',
+          "  • Run from inside a git repository (opencode derives the id from the root commit)",
+        ])
+      }
+
+      // If --project-id was passed and no project file existed yet, create it.
+      // writeWithDirs creates the .opencode/ directory if needed.
+      if (argProjectId && !fileExists) {
+        yield* fs.writeWithDirs(opencodeFilePath, JSON.stringify({ project_id: argProjectId }, null, 2)).pipe(
+          Effect.catch((err) =>
+            userError("project_file_unwritable", [
+              "Error: Could not write project file",
+              "",
+              `  ${opencodeFilePath}`,
+              `    ${err instanceof Error ? err.message : String(err)}`,
+              "",
+              "Check that the directory exists and is writable.",
+            ]),
+          ),
+        )
+      }
+
       // Phase 2: upsert
-      const row = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
-      const existing = row
-        ? fromRow(row)
+      const projectRow = yield* db((d) => d.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
+      const sessionID = SessionID.forProject(data.id)
+      const sessionRow = yield* db((d) =>
+        d.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
+      )
+
+      const existing = projectRow
+        ? fromRow(projectRow)
         : {
             id: data.id,
             worktree: data.worktree,
@@ -318,6 +438,7 @@ export const layer: Layer.Layer<
             icon_url: result.icon?.url,
             icon_url_override: result.icon?.override,
             icon_color: result.icon?.color,
+            base_branch: `${result.id}_base`,
             time_created: result.time.created,
             time_updated: result.time.updated,
             time_initialized: result.time.initialized,
@@ -342,6 +463,39 @@ export const layer: Layer.Layer<
           .run(),
       )
 
+      if (!sessionRow) {
+        // The session row references a per-project branch. The branch shouldn't
+        // exist yet when the session record doesn't — refuse if it does, so we
+        // don't silently overwrite an inconsistent state. The actual branch
+        // creation is deferred until after the session insert is committed.
+        const branchExists = yield* Effect.promise(() => Database.hasBranch(result.id))
+        if (branchExists) {
+          return yield* Effect.die(
+            new Error(
+              `Branch "${result.id}" already exists but the session "${sessionID}" does not — refusing to create the session. ` +
+                `Delete the branch or restore the session row to resolve.`,
+            ),
+          )
+        }
+
+        yield* db((d) =>
+          d
+            .insert(SessionTable)
+            .values({
+              id: sessionID,
+              project_id: result.id,
+              slug: Slug.create(),
+              directory: result.worktree,
+              title: `Session for ${result.id}`,
+              version: InstallationVersion,
+              branch: result.id,
+              time_created: Date.now(),
+              time_updated: Date.now(),
+            })
+            .run(),
+        )
+      }
+
       if (data.id !== ProjectID.global) {
         yield* db((d) =>
           d
@@ -350,6 +504,33 @@ export const layer: Layer.Layer<
             .where(and(eq(SessionTable.project_id, ProjectID.global), eq(SessionTable.directory, data.worktree)))
             .run(),
         )
+      }
+
+      const commitMessage = (() => {
+        const action = projectRow ? "update" : "create"
+        const sessionSuffix = !sessionRow ? " with new session" : ""
+        return `${action} project ${result.id}${sessionSuffix}`
+      })()
+      yield* Effect.promise(() => Database.postMigrate(commitMessage))
+
+      // Branches are created only after the session insert is committed, so the
+      // session row that references them is durable on `main` before the
+      // branches are forked off. The project's base branch is created first
+      // off `main`, marked with an empty commit, and the session branch is
+      // then forked off the base branch.
+      if (!sessionRow) {
+        const baseBranch = `${result.id}_base`
+        yield* Effect.promise(() => Database.createBranch(baseBranch, "main", false))
+        yield* Effect.promise(() => Database.changeBranch(baseBranch))
+        yield* Database.commitEmpty(`${baseBranch} commit created`)
+        yield* Effect.promise(() => Database.createBranch(result.id, baseBranch, false))
+      }
+
+      // After project/session work is committed (or skipped), switch to the
+      // branch recorded on the current session so subsequent work runs there.
+      const session = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
+      if (session?.branch) {
+        yield* Effect.promise(() => Database.changeBranch(session.branch!))
       }
 
       yield* emitUpdated(result)

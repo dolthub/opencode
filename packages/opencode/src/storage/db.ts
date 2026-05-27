@@ -94,12 +94,39 @@ const MySQLModule = Flag.OPENCODE_MYSQL_URL ? await import("./db.mysql") : null
 // Awaited by useAsync/transactionAsync before the first query.
 let _migrationPromise: Promise<void> | undefined
 
+// Validates that the storage is in a clean state on 'main' before write work
+// runs. Pass the adapter explicitly when calling from inside the lazy
+// Adapter() initializer to avoid re-entering it.
+export async function preMigrate(adapter: StorageAdapter = Adapter()): Promise<void> {
+  const initialBranch = await adapter.currentBranch()
+  if (initialBranch !== "main") {
+    throw new Error(`Expected to be on 'main' branch, but on '${initialBranch}'`)
+  }
+  if (await adapter.isDirty()) {
+    throw new Error("Cannot proceed: working set is dirty")
+  }
+}
+
+// Commits any pending changes with `message`. Pass the adapter explicitly
+// when calling from inside the lazy Adapter() initializer.
+export async function postMigrate(
+  message: string,
+  adapter: StorageAdapter = Adapter(),
+): Promise<void> {
+  if (await adapter.isDirty()) {
+    await adapter.commit(message)
+  }
+}
+
 const Adapter = lazy((): StorageAdapter => {
   if (MySQLModule && Flag.OPENCODE_MYSQL_URL) {
     log.info("opening database", { driver: "mysql" })
     const adapter = MySQLModule.init(Flag.OPENCODE_MYSQL_URL)
-    const result = adapter.migrate([])
-    if (result instanceof Promise) _migrationPromise = result
+    _migrationPromise = (async () => {
+      await preMigrate(adapter)
+      await adapter.migrate([])
+      await postMigrate("migration changes", adapter)
+    })()
     return adapter
   }
 
@@ -127,7 +154,22 @@ const Adapter = lazy((): StorageAdapter => {
         item.sql = "select 1;"
       }
     }
+    let didCheckoutNew = false
+    if (adapter.isDirty() === true) {
+      adapter.checkoutNew("migration", true)
+      if (adapter.isDirty() === true) {
+        adapter.commit("temp migration commit")
+      }
+      adapter.changeBranch("main")
+      didCheckoutNew = true
+    }
     adapter.migrate(entries)
+    if (adapter.isDirty() === true) {
+      adapter.commit("migration changes")
+    }
+    if (didCheckoutNew) {
+      adapter.merge("migration", true)
+    }
   }
 
   return adapter
@@ -255,8 +297,32 @@ export function commit(message: string): Effect.Effect<void> {
   return Effect.promise(() => Promise.resolve(Adapter().commit(message)))
 }
 
-export function supportsVersioning(): boolean {
-  return Adapter().supportsVersioning()
+export function commitEmpty(message: string): Effect.Effect<void> {
+  return Effect.promise(() => Promise.resolve(Adapter().commitEmpty(message)))
+}
+
+export async function isDirty(): Promise<boolean> {
+  return Adapter().isDirty()
+}
+
+export async function hasCommitInHistory(branch: string, commit: string): Promise<boolean> {
+  return Adapter().hasCommitInHistory(branch, commit)
+}
+
+export async function listBranchesWithBase(baseBranch: string): Promise<string[]> {
+  return Adapter().listBranchesWithBase(baseBranch)
+}
+
+export async function merge(branch: string, squash: boolean = false): Promise<void> {
+  await Adapter().merge(branch, squash)
+}
+
+export async function checkoutNew(name: string, force: boolean = false): Promise<void> {
+  await Adapter().checkoutNew(name, force)
+}
+
+export async function createBranch(name: string, startPoint: string | null, force: boolean): Promise<void> {
+  await Adapter().createBranch(name, startPoint, force)
 }
 
 export async function changeBranch(name: string): Promise<void> {

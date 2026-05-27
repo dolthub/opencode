@@ -92,6 +92,8 @@ export const SessionPaths = {
   revert: `${root}/:sessionID/revert`,
   unrevert: `${root}/:sessionID/unrevert`,
   commit: `${root}/:sessionID/commit`,
+  newBranch: `${root}/:sessionID/new-branch`,
+  branches: `${root}/:sessionID/branches`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -376,6 +378,31 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.commit",
             summary: "Commit storage",
             description: "Commit the current state of the versioned storage with the given message.",
+          }),
+        ),
+        HttpApiEndpoint.post("newBranch", SessionPaths.newBranch, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ branch: Schema.String }),
+          success: described(Schema.Boolean, "Branch created"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.newBranch",
+            summary: "Create new branch",
+            description:
+              "Switch the session onto a new branch forked from main. The session's branch field is updated and committed before the branch is created.",
+          }),
+        ),
+        HttpApiEndpoint.get("branches", SessionPaths.branches, {
+          params: { sessionID: SessionID },
+          success: described(Schema.Array(Schema.String), "Branches forked from the project's base branch"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.branches",
+            summary: "List session branches",
+            description:
+              "Returns the names of branches whose history contains the commit at the head of this project's base branch.",
           }),
         ),
         HttpApiEndpoint.post("permissionRespond", SessionPaths.permissions, {

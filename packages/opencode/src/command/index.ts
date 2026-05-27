@@ -60,6 +60,8 @@ export const Default = {
   INIT: "init",
   REVIEW: "review",
   COMMIT: "commit",
+  NEW: "new",
+  BRANCH: "branch",
 } as const
 
 export interface Interface {
@@ -108,6 +110,24 @@ export const layer = Layer.effect(
           return ""
         },
         hints: ["$ARGUMENTS"],
+      }
+      commands[Default.NEW] = {
+        name: Default.NEW,
+        description: "create a new branch and switch the session to it",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.BRANCH] = {
+        name: Default.BRANCH,
+        description: "list branches forked from this project's base branch",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: [],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

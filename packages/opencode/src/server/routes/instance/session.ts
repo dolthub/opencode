@@ -648,8 +648,6 @@ export const SessionRoutes = lazy(() =>
       ),
       async (c) =>
         jsonRequest("SessionRoutes.commit", c, function* () {
-          if (!Database.supportsVersioning())
-            throw new NamedError.Unknown({ message: "Storage does not support versioning" })
           const { message } = c.req.valid("json")
           yield* Database.commit(message)
           return true

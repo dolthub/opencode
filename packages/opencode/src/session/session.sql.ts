@@ -28,6 +28,7 @@ export const SessionTable = sqliteTable(
     path: text(),
     title: text().notNull(),
     version: text().notNull(),
+    branch: text({ length: 256 }),
     share_url: text(),
     summary_additions: integer(),
     summary_deletions: integer(),

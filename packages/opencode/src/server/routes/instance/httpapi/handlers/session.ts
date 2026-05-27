@@ -18,6 +18,9 @@ import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
 import * as Database from "@/storage/db"
+import { SessionTable } from "@/session/session.sql"
+import { ProjectTable } from "@/project/project.sql"
+import { eq } from "drizzle-orm"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { commitError } from "../errors"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -318,8 +321,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: { message: string }
     }) {
-      if (!Database.supportsVersioning())
-        return yield* Effect.fail(commitError("Storage does not support versioning"))
       yield* Database.commit(ctx.payload.message).pipe(
         Effect.catchCause((cause) => {
           const err = Cause.squash(cause)
@@ -331,6 +332,100 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return Effect.fail(commitError(msg))
         }),
       )
+      return true
+    })
+
+    const branches = Effect.fn("SessionHttpApi.branches")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const sessionID = ctx.params.sessionID
+      const baseBranch = yield* Effect.promise(() =>
+        Database.useAsync(async (db) => {
+          const sessionRow = (await db
+            .select({ project_id: SessionTable.project_id })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+          const projectID = sessionRow[0]?.project_id
+          if (!projectID) return undefined
+          const projectRow = (await db
+            .select({ base_branch: ProjectTable.base_branch })
+            .from(ProjectTable)
+            .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+          return projectRow[0]?.base_branch ?? undefined
+        }),
+      )
+      if (!baseBranch) {
+        return yield* Effect.fail(
+          commitError(`Could not resolve base_branch for session "${sessionID}"`),
+        )
+      }
+      const list = yield* Effect.promise(() => Database.listBranchesWithBase(baseBranch)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return list
+    })
+
+    const newBranch = Effect.fn("SessionHttpApi.newBranch")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { branch: string }
+    }) {
+      const sessionID = ctx.params.sessionID
+      const branch = ctx.payload.branch.trim()
+      if (!branch) {
+        return yield* Effect.fail(commitError("Branch name must be a non-empty string"))
+      }
+      const exists = yield* Effect.promise(() => Database.hasBranch(branch))
+      if (exists) {
+        return yield* Effect.fail(commitError(`A branch named "${branch}" already exists`))
+      }
+      // Resolve the project's base branch — the new session branch is forked
+      // from there rather than from main, so it inherits whatever per-project
+      // bootstrap state was committed onto the base branch.
+      const baseBranch = yield* Effect.promise(() =>
+        Database.useAsync(async (db) => {
+          const sessionRow = (await db
+            .select({ project_id: SessionTable.project_id })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+          const projectID = sessionRow[0]?.project_id
+          if (!projectID) return undefined
+          const projectRow = (await db
+            .select({ base_branch: ProjectTable.base_branch })
+            .from(ProjectTable)
+            .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+          return projectRow[0]?.base_branch ?? undefined
+        }),
+      )
+      if (!baseBranch) {
+        return yield* Effect.fail(
+          commitError(`Could not resolve base_branch for session "${sessionID}" — refusing to create branch.`),
+        )
+      }
+      yield* Effect.promise(() => Database.changeBranch("main"))
+      yield* Effect.promise(() =>
+        Database.useAsync((db) => db.update(SessionTable).set({ branch }).where(eq(SessionTable.id, sessionID))),
+      )
+      yield* Database.commit(`switch session ${sessionID} to branch ${branch}`).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      yield* Effect.promise(() => Database.createBranch(branch, baseBranch, false))
+      yield* Effect.promise(() => Database.changeBranch(branch))
       return true
     })
 
@@ -399,6 +494,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("revert", revert)
       .handle("unrevert", unrevert)
       .handle("commit", commit)
+      .handle("newBranch", newBranch)
+      .handle("branches", branches)
       .handle("permissionRespond", permissionRespond)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)

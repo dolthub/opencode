@@ -12,9 +12,14 @@ export interface StorageAdapter {
   migrate(entries: Journal): void | Promise<void>
   close(): void | Promise<void>
   commit(message: string): void | Promise<void>
-  supportsVersioning(): boolean
+  commitEmpty(message: string): void | Promise<void>
   createBranch(name: string, startPoint: string | null, force: boolean): void | Promise<void>
+  checkoutNew(name: string, force?: boolean): void | Promise<void>
   changeBranch(name: string): void | Promise<void>
   currentBranch(): string | Promise<string>
   hasBranch(name: string): boolean | Promise<boolean>
+  hasCommitInHistory(branch: string, commit: string): boolean | Promise<boolean>
+  isDirty(): boolean | Promise<boolean>
+  listBranchesWithBase(baseBranch: string): string[] | Promise<string[]>
+  merge(branch: string, squash?: boolean): void | Promise<void>
 }

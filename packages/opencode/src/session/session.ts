@@ -498,8 +498,11 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       permission?: Permission.Ruleset
     }) {
       const ctx = yield* InstanceState.context
+      const id = SessionID.forProject(ctx.project.id)
+      const existing = yield* get(id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
+      if (existing) return existing
       const result: Info = {
-        id: SessionID.descending(input.id),
+        id,
         slug: Slug.create(),
         version: InstallationVersion,
         projectID: ctx.project.id,

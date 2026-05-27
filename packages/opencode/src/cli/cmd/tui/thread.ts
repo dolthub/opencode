@@ -2,6 +2,7 @@ import { cmd } from "@/cli/cmd/cmd"
 import { tui } from "./app"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "./worker"
+import nodeFs from "fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
@@ -21,7 +22,6 @@ import {
   ensureRunID,
   sanitizedProcessEnv,
 } from "@opencode-ai/core/util/opencode-process"
-import { validateSession } from "./validate-session"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -91,20 +91,6 @@ export const TuiThreadCommand = cmd({
         alias: ["m"],
         describe: "model to use in the format of provider/model",
       })
-      .option("continue", {
-        alias: ["c"],
-        describe: "continue the last session",
-        type: "boolean",
-      })
-      .option("session", {
-        alias: ["s"],
-        type: "string",
-        describe: "session id to continue",
-      })
-      .option("fork", {
-        type: "boolean",
-        describe: "fork the session when continuing (use with --continue or --session)",
-      })
       .option("prompt", {
         type: "string",
         describe: "prompt to use",
@@ -122,12 +108,6 @@ export const TuiThreadCommand = cmd({
       // spawn or async work so the OS cannot kill the process group.
       win32DisableProcessedInput()
 
-      if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
-        process.exitCode = 1
-        return
-      }
-
       // Resolve relative --project paths from PWD, then use the real cwd after
       // chdir so the thread and worker share the same directory key.
       const next = resolveThreadDirectory(args.project)
@@ -139,6 +119,47 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+
+      // Preflight: validate .opencode/project.json against --project-id BEFORE
+      // spawning the worker. Worker stderr isn't surfaced to the parent
+      // terminal under bun, so user-facing config errors must fire here where
+      // process.exit actually terminates the whole process.
+      const projectFilePath = path.join(cwd, ".opencode", "project.json")
+      const argProjectId = process.env.OPENCODE_PROJECT_ID
+      let fileProjectId: string | undefined
+      if (nodeFs.existsSync(projectFilePath)) {
+        try {
+          const parsed = JSON.parse(nodeFs.readFileSync(projectFilePath, "utf-8")) as { project_id?: unknown }
+          if (typeof parsed.project_id === "string" && parsed.project_id.length > 0) {
+            fileProjectId = parsed.project_id
+          }
+        } catch {
+          // Parse/read errors are handled by the worker's check — they're
+          // edge cases and the user will see them via the normal error path.
+        }
+      }
+      if (fileProjectId && argProjectId && fileProjectId !== argProjectId) {
+        process.stderr.write(
+          [
+            "",
+            "Error: Project id mismatch",
+            "",
+            `  ${projectFilePath}`,
+            `    file value:   "${fileProjectId}"`,
+            `    --project-id: "${argProjectId}"`,
+            "",
+            "To resolve, do one of the following:",
+            `  • Change the value of --project-id to "${fileProjectId}"`,
+            `  • Remove the --project-id parameter from the command line`,
+            `  • Edit the file so "project_id" is "${argProjectId}"`,
+            `  • Delete the file (it will be re-created):  rm "${projectFilePath}"`,
+            "",
+            "",
+          ].join("\n"),
+        )
+        process.exit(1)
+      }
+
       const env = sanitizedProcessEnv({
         [OPENCODE_PROCESS_ROLE]: "worker",
         [OPENCODE_RUN_ID]: ensureRunID(),
@@ -211,19 +232,6 @@ export const TuiThreadCommand = cmd({
             events: createEventSource(client),
           }
 
-      try {
-        await validateSession({
-          url: transport.url,
-          sessionID: args.session,
-          directory: cwd,
-          fetch: transport.fetch,
-        })
-      } catch (error) {
-        UI.error(errorMessage(error))
-        process.exitCode = 1
-        return
-      }
-
       setTimeout(() => {
         client.call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
@@ -241,12 +249,9 @@ export const TuiThreadCommand = cmd({
           fetch: transport.fetch,
           events: transport.events,
           args: {
-            continue: args.continue,
-            sessionID: args.session,
             agent: args.agent,
             model: args.model,
             prompt,
-            fork: args.fork,
           },
         })
       } finally {

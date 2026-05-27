@@ -26,7 +26,6 @@ import { Binary } from "@opencode-ai/core/util/binary"
 import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
-import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import * as Log from "@opencode-ai/core/util/log"
 import { emptyConsoleState, type ConsoleState } from "@/config/console-state"
@@ -370,7 +369,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const exit = useExit()
-    const args = useArgs()
 
     async function bootstrap(input: { fatal?: boolean } = {}) {
       const fatal = input.fatal ?? true
@@ -397,7 +395,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         agentsPromise,
         configPromise,
         projectPromise,
-        ...(args.continue ? [sessionListPromise] : []),
       ]
 
       await Promise.all(blockingRequests)
@@ -407,7 +404,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const consoleStateResponse = consoleStatePromise
           const agentsResponse = agentsPromise.then((x) => x.data ?? [])
           const configResponse = configPromise.then((x) => x.data!)
-          const sessionListResponse = args.continue ? sessionListPromise : undefined
 
           return Promise.all([
             providersResponse,
@@ -415,14 +411,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             consoleStateResponse,
             agentsResponse,
             configResponse,
-            ...(sessionListResponse ? [sessionListResponse] : []),
           ]).then((responses) => {
             const providers = responses[0]
             const providerList = responses[1]
             const consoleState = responses[2]
             const agents = responses[3]
             const config = responses[4]
-            const sessions = responses[5]
 
             batch(() => {
               setStore("provider", reconcile(providers.providers))
@@ -431,7 +425,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))
               setStore("config", reconcile(config))
-              if (sessions !== undefined) setStore("session", reconcile(sessions))
             })
           })
         })
@@ -439,7 +432,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (store.status !== "complete") setStore("status", "partial")
           // non-blocking
           void Promise.all([
-            ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
+            sessionListPromise.then((sessions) => setStore("session", reconcile(sessions))),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
@@ -534,6 +527,24 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
           fullSyncedSessions.add(sessionID)
+        },
+        // Force a re-fetch of a session's messages/parts/todo/diff from the
+        // server, bypassing the one-shot cache used by sync(). Use this after
+        // an operation that changes what the database reports for a session
+        // (e.g. a branch switch via /new) so the on-screen chat history is
+        // rebuilt from the database entities rather than stale local state.
+        async rebuild(sessionID: string) {
+          fullSyncedSessions.delete(sessionID)
+          setStore(
+            produce((draft) => {
+              const existing = draft.message[sessionID] ?? []
+              for (const msg of existing) delete draft.part[msg.id]
+              draft.message[sessionID] = []
+              draft.todo[sessionID] = []
+              draft.session_diff[sessionID] = []
+            }),
+          )
+          await this.sync(sessionID)
         },
       },
       bootstrap,

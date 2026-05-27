@@ -149,16 +149,7 @@ export function tui(input: {
             <ExitProvider onBeforeExit={onBeforeExit} onExit={onExit}>
               <KVProvider>
                 <ToastProvider>
-                  <RouteProvider
-                    initialRoute={
-                      input.args.continue
-                        ? {
-                            type: "session",
-                            sessionID: "dummy",
-                          }
-                        : undefined
-                    }
-                  >
+                  <RouteProvider>
                     <TuiConfigProvider config={input.config}>
                       <SDKProvider
                         url={input.url}
@@ -350,51 +341,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           })
         local.model.set({ providerID, modelID }, { recent: true })
       }
-      if (args.sessionID && !args.fork) {
-        route.navigate({
-          type: "session",
-          sessionID: args.sessionID,
-        })
-      }
-    })
-  })
-
-  let continued = false
-  createEffect(() => {
-    // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
-    if (continued || sync.status === "loading" || !args.continue) return
-    const match = sync.data.session
-      .toSorted((a, b) => b.time.updated - a.time.updated)
-      .find((x) => x.parentID === undefined)?.id
-    if (match) {
-      continued = true
-      if (args.fork) {
-        void sdk.client.session.fork({ sessionID: match }).then((result) => {
-          if (result.data?.id) {
-            route.navigate({ type: "session", sessionID: result.data.id })
-          } else {
-            toast.show({ message: "Failed to fork session", variant: "error" })
-          }
-        })
-      } else {
-        route.navigate({ type: "session", sessionID: match })
-      }
-    }
-  })
-
-  // Handle --session with --fork: wait for sync to be fully complete before forking
-  // (session list loads in non-blocking phase for --session, so we must wait for "complete"
-  // to avoid a race where reconcile overwrites the newly forked session)
-  let forked = false
-  createEffect(() => {
-    if (forked || sync.status !== "complete" || !args.sessionID || !args.fork) return
-    forked = true
-    void sdk.client.session.fork({ sessionID: args.sessionID }).then((result) => {
-      if (result.data?.id) {
-        route.navigate({ type: "session", sessionID: result.data.id })
-      } else {
-        toast.show({ message: "Failed to fork session", variant: "error" })
-      }
     })
   })
 
@@ -432,8 +378,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       keybind: "session_new",
       category: "Session",
       slash: {
-        name: "new",
-        aliases: ["clear"],
+        name: "clear",
       },
       onSelect: () => {
         route.navigate({

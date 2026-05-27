@@ -17,6 +17,17 @@ import { SQLiteTextJson } from "drizzle-orm/sqlite-core"
 
 const log = Log.create({ service: "db" })
 
+// drizzle-orm wraps mysql2 errors as "Failed query: ..." and stashes the
+// real driver error on `.cause`. The actual Dolt/MySQL text lives on
+// `cause.sqlMessage`. Walk the chain so callers see the underlying reason.
+function unwrapSqlError(e: unknown): string {
+  const inner = e instanceof Error ? ((e as any).cause ?? e) : e
+  if (inner instanceof Error) {
+    return (inner as any).sqlMessage ?? inner.message
+  }
+  return String(inner)
+}
+
 // ── Drizzle logger ────────────────────────────────────────────────────────────
 
 const drizzleLogger = {
@@ -35,6 +46,7 @@ export const ProjectTable = mysqlTable("project", {
   icon_url: text(),
   icon_url_override: text(),
   icon_color: text(),
+  base_branch: varchar({ length: 256 }),
   time_created: bigint({ mode: "number" }).notNull(),
   time_updated: bigint({ mode: "number" }).notNull(),
   time_initialized: bigint({ mode: "number" }),
@@ -56,6 +68,7 @@ export const SessionTable = mysqlTable(
     path: text(),
     title: text().notNull(),
     version: varchar({ length: 50 }).notNull(),
+    branch: varchar({ length: 256 }),
     share_url: text(),
     summary_additions: int(),
     summary_deletions: int(),
@@ -238,6 +251,7 @@ const DDL = [
     \`icon_url\` TEXT,
     \`icon_url_override\` TEXT,
     \`icon_color\` TEXT,
+    \`base_branch\` VARCHAR(256),
     \`time_created\` BIGINT NOT NULL,
     \`time_updated\` BIGINT NOT NULL,
     \`time_initialized\` BIGINT,
@@ -295,6 +309,7 @@ const DDL = [
     \`path\` TEXT,
     \`title\` TEXT NOT NULL,
     \`version\` VARCHAR(50) NOT NULL,
+    \`branch\` VARCHAR(256),
     \`share_url\` TEXT,
     \`summary_additions\` INT,
     \`summary_deletions\` INT,
@@ -449,7 +464,11 @@ function wrapQueryBuilder(target: any): any {
           wrapQueryBuilder(t.onDuplicateKeyUpdate({ set: config.set }))
       }
       if (prop === "onConflictDoNothing") {
-        return () => wrapQueryBuilder(t.ignore())
+        return () => {
+          const cfg = t.config
+          if (cfg) cfg.ignore = true
+          return wrapQueryBuilder(t)
+        }
       }
 
       // Pass Promise protocol through unwrapped to prevent infinite recursion
@@ -512,12 +531,24 @@ function parseConnectionString(url: string): mysql.PoolOptions {
     user: parsed.username || undefined,
     password: parsed.password || undefined,
     database: parsed.pathname.replace(/^\//, "") || undefined,
+    // Dolt's working set is scoped to the connection session. Pinning the pool
+    // to a single connection guarantees inserts and `dolt_commit` run in the
+    // same session, so the commit actually sees the dirty state.
+    connectionLimit: 1,
   }
 }
 
 export function init(connectionString: string): StorageAdapter {
   const pool = mysql.createPool(parseConnectionString(connectionString))
   const mysqlDb = drizzle({ client: pool, logger: drizzleLogger }) as MySql2Database
+
+  const hasCommitInHistory = async (branch: string, commit: string): Promise<boolean> => {
+    const [rows] = await mysqlDb.execute(
+      sql`SELECT count(*) FROM dolt_log AS OF ${branch} WHERE commit_hash = ${commit}`,
+    )
+    const row = (rows as Record<string, unknown>[])[0]
+    return Number(Object.values(row)[0]) > 0
+  }
 
   return {
     db: wrapMySqlDb(mysqlDb),
@@ -535,7 +566,6 @@ export function init(connectionString: string): StorageAdapter {
       }
     },
     close: () => pool.end(),
-    supportsVersioning: () => true,
     currentBranch: async (): Promise<string> => {
       const [rows] = await mysqlDb.execute(sql`SELECT active_branch()`)
       const row = (rows as Record<string, unknown>[])[0]
@@ -556,13 +586,58 @@ export function init(connectionString: string): StorageAdapter {
         await mysqlDb.execute(sql`CALL dolt_branch(${name})`)
       }
     },
+    checkoutNew: async (name: string, force: boolean = false): Promise<void> => {
+      if (!name) throw new Error("branch name must be non-empty")
+      const flag = force ? "-B" : "-b"
+      await mysqlDb.execute(sql`CALL dolt_checkout(${flag}, ${name})`)
+    },
     hasBranch: async (name: string): Promise<boolean> => {
       const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
       const row = (rows as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
     },
+    hasCommitInHistory,
+    listBranchesWithBase: async (baseBranch: string): Promise<string[]> => {
+      const [rows] = await mysqlDb.execute(sql`SELECT name, hash FROM dolt_branches`)
+      const branches = rows as Array<{ name: string; hash: string }>
+      const base = branches.find((b) => b.name === baseBranch)
+      if (!base) {
+        throw new Error(`Base branch "${baseBranch}" not found in dolt_branches`)
+      }
+      const result: string[] = []
+      for (const b of branches) {
+        if (b.name === baseBranch) continue
+        if (await hasCommitInHistory(b.name, base.hash)) {
+          result.push(b.name)
+        }
+      }
+      return result
+    },
     commit: async (message: string): Promise<void> => {
-      await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
+      try {
+        await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
+      } catch (e) {
+        throw new Error(unwrapSqlError(e))
+      }
+    },
+    commitEmpty: async (message: string): Promise<void> => {
+      try {
+        await mysqlDb.execute(sql`CALL dolt_commit('--allow-empty', '-m', ${message})`)
+      } catch (e) {
+        throw new Error(unwrapSqlError(e))
+      }
+    },
+    isDirty: async (): Promise<boolean> => {
+      const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_diff WHERE commit_hash = 'WORKING'`)
+      const row = (rows as Record<string, unknown>[])[0]
+      return Number(Object.values(row)[0]) !== 0
+    },
+    merge: async (branch: string, squash: boolean = false): Promise<void> => {
+      if (squash) {
+        await mysqlDb.execute(sql`CALL dolt_merge(${branch}, '--squash')`)
+      } else {
+        await mysqlDb.execute(sql`CALL dolt_merge(${branch})`)
+      }
     },
   }
 }
