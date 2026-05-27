@@ -397,15 +397,18 @@ export const SessionApi = HttpApi.make("session")
         ),
         HttpApiEndpoint.post("checkoutBranch", SessionPaths.checkoutBranch, {
           params: { sessionID: SessionID },
-          payload: Schema.Struct({ branch: Schema.String }),
+          payload: Schema.Struct({
+            branch: Schema.String,
+            create: Schema.optional(Schema.Boolean),
+          }),
           success: described(Schema.Boolean, "Branch checked out"),
           error: ApiCommitError,
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.checkoutBranch",
-            summary: "Switch the session to an existing branch",
+            summary: "Switch the session to a branch",
             description:
-              "Update the session's branch field to the supplied existing branch and switch the connection onto it.",
+              "Update the session's branch field and switch onto it. With create=false (default) the branch must already exist. With create=true a new branch is created via dolt_checkout -b.",
           }),
         ),
         HttpApiEndpoint.get("branches", SessionPaths.branches, {

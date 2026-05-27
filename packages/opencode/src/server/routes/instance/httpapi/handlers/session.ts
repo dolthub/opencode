@@ -404,22 +404,37 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     const checkoutBranch = Effect.fn("SessionHttpApi.checkoutBranch")(function* (ctx: {
       params: { sessionID: SessionID }
-      payload: { branch: string }
+      payload: { branch: string; create?: boolean }
     }) {
       const sessionID = ctx.params.sessionID
       const branch = ctx.payload.branch.trim()
+      const create = ctx.payload.create === true
       if (!branch) {
         return yield* Effect.fail(commitError("Branch name must be a non-empty string"))
       }
       const exists = yield* Effect.promise(() => Database.hasBranch(branch))
-      if (!exists) {
-        return yield* Effect.fail(commitError(`No branch named "${branch}" exists`))
+      if (create) {
+        if (exists) {
+          return yield* Effect.fail(commitError(`A branch named "${branch}" already exists`))
+        }
+      } else {
+        if (!exists) {
+          return yield* Effect.fail(commitError(`No branch named "${branch}" exists`))
+        }
       }
+      // Remember where we started so we can fork the new branch off of it
+      // (rather than off of `main`, since that's where we have to hop to
+      // update the session row).
+      const originalBranch = create ? yield* Effect.promise(() => Database.currentBranch()) : null
       yield* Effect.promise(() => Database.changeBranch("main"))
       yield* Effect.promise(() =>
         Database.useAsync((db) => db.update(SessionTable).set({ branch }).where(eq(SessionTable.id, sessionID))),
       )
-      yield* Database.commit(`checkout session ${sessionID} onto branch ${branch}`).pipe(
+      yield* Database.commit(
+        create
+          ? `create branch ${branch} for session ${sessionID}`
+          : `checkout session ${sessionID} onto branch ${branch}`,
+      ).pipe(
         Effect.catchCause((cause) => {
           const err = Cause.squash(cause)
           const inner = err instanceof Error ? ((err as any).cause ?? err) : err
@@ -430,7 +445,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return Effect.fail(commitError(msg))
         }),
       )
-      yield* Effect.promise(() => Database.changeBranch(branch))
+      if (create) {
+        if (originalBranch) {
+          yield* Effect.promise(() => Database.changeBranch(originalBranch))
+        }
+        yield* Effect.promise(() => Database.checkoutNew(branch, false))
+      } else {
+        yield* Effect.promise(() => Database.changeBranch(branch))
+      }
       return true
     })
 

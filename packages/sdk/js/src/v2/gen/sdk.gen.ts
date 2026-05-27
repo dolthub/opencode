@@ -3439,6 +3439,7 @@ export class Session2 extends HeyApiClient {
       directory?: string
       workspace?: string
       branch: string
+      create?: boolean
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -3451,6 +3452,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "branch" },
+            { in: "body", key: "create" },
           ],
         },
       ],

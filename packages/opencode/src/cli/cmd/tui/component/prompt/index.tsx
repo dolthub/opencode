@@ -1014,13 +1014,19 @@ export function Prompt(props: PromptProps) {
       }
     } else if (inputText.startsWith("/checkout")) {
       const rest = inputText.slice("/checkout".length).trim()
-      const branch = rest.split(/\s+/)[0]
-      if (!branch || rest.includes(" ") || rest.includes("\n")) {
-        toast.show({ message: "Usage: /checkout <branch_name>  (single word)", variant: "error" })
+      const tokens = rest.split(/\s+/).filter(Boolean)
+      const create = tokens[0] === "-b"
+      const branch = create ? tokens[1] : tokens[0]
+      const expectedLength = create ? 2 : 1
+      if (!branch || tokens.length !== expectedLength) {
+        toast.show({
+          message: "Usage: /checkout <branch_name>  or  /checkout -b <branch_name>",
+          variant: "error",
+        })
         return false
       }
       try {
-        await sdk.client.session.checkoutBranch({ sessionID, branch }, { throwOnError: true })
+        await sdk.client.session.checkoutBranch({ sessionID, branch, create }, { throwOnError: true })
       } catch (error) {
         const msg =
           (error as any)?.message ??
@@ -1028,16 +1034,24 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
-      // Stay on the current view. Just clear the input and refresh the chat
-      // history from the database — the new branch may have a different
-      // message history.
+      // Clear the input and refresh chat history from the new branch's DB
+      // state. For `/checkout -b` (create), also reset the view to home —
+      // matches /new's UX since a brand new branch starts a fresh session
+      // history.
       history.append({ ...store.prompt, mode: currentMode })
       input.extmarks.clear()
       setStore("prompt", { input: "", parts: [] })
       setStore("extmarkToPartIndex", new Map())
       input.clear()
+      if (create) {
+        dialog.clear()
+        route.navigate({ type: "home" })
+      }
       void sync.session.rebuild(sessionID).catch(() => {})
-      toast.show({ message: `Checked out branch '${branch}'`, variant: "success" })
+      toast.show({
+        message: create ? `Switched to new branch '${branch}'` : `Checked out branch '${branch}'`,
+        variant: "success",
+      })
       return true
     } else if (inputText.startsWith("/new")) {
       const rest = inputText.slice("/new".length).trim()
