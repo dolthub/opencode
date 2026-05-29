@@ -18,11 +18,40 @@ export interface StorageAdapter {
   changeBranch(name: string): void | Promise<void>
   currentBranch(): string | Promise<string>
   hasBranch(name: string): boolean | Promise<boolean>
+  branchHash(branch: string): string | Promise<string>
   hasCommitInHistory(branch: string, commit: string): boolean | Promise<boolean>
   isDirty(): boolean | Promise<boolean>
   listBranchesWithBase(baseBranch: string): string[] | Promise<string[]>
   getCommitLog(): CommitLogEntry[] | Promise<CommitLogEntry[]>
+  executeRaw(statement: string): RawResult | Promise<RawResult>
+  diffStat(param1: string, param2: string): DiffStat[] | Promise<DiffStat[]>
   merge(branch: string, squash?: boolean): void | Promise<void>
+}
+
+export type RawResult =
+  | { kind: "rows"; columns: string[]; rows: Array<Record<string, unknown>> }
+  | { kind: "result"; affectedRows?: number; insertId?: number | string; info?: string }
+
+export interface DiffStat {
+  tableName: string
+  rowsUnmodified: number
+  rowsAdded: number
+  rowsDeleted: number
+  rowsModified: number
+  cellsAdded: number
+  cellsDeleted: number
+  cellsModified: number
+  oldRowCount: number
+  newRowCount: number
+  oldCellCount: number
+  newCellCount: number
+  // Byte-size of the `data` JSON column across changed rows. Zero for tables
+  // that don't have a `data` column (e.g. todo).
+  oldDataBytes: number
+  newDataBytes: number
+  dataBytesAdded: number
+  dataBytesDeleted: number
+  dataBytesModifiedDelta: number
 }
 
 export interface CommitLogEntry {

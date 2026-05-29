@@ -3469,6 +3469,138 @@ export class Session2 extends HeyApiClient {
     })
   }
 
+  public diffStat<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      param1: string
+      param2: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "param1" },
+            { in: "body", key: "param2" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      {
+        param1: string
+        param2: string
+        tables: Array<{
+          tableName: string
+          rowsUnmodified: number
+          rowsAdded: number
+          rowsDeleted: number
+          rowsModified: number
+          cellsAdded: number
+          cellsDeleted: number
+          cellsModified: number
+          oldRowCount: number
+          newRowCount: number
+          oldCellCount: number
+          newCellCount: number
+          oldDataBytes: number
+          newDataBytes: number
+          dataBytesAdded: number
+          dataBytesDeleted: number
+          dataBytesModifiedDelta: number
+        }>
+      },
+      unknown,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/diff-stat",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public context<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      { model: { providerID: string; modelID: string }; messages: unknown[] },
+      unknown,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/context",
+      ...options,
+      ...params,
+    })
+  }
+
+  public sql<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      statement: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "statement" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      | { kind: "rows"; columns: string[]; rows: Array<Record<string, unknown>> }
+      | { kind: "result"; affectedRows?: number; insertId?: number | string; info?: string },
+      unknown,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/sql",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   public log<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string

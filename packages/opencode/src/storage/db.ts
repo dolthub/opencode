@@ -309,6 +309,10 @@ export async function hasCommitInHistory(branch: string, commit: string): Promis
   return Adapter().hasCommitInHistory(branch, commit)
 }
 
+export async function branchHash(branch: string): Promise<string> {
+  return Adapter().branchHash(branch)
+}
+
 export async function currentBranch(): Promise<string> {
   return Adapter().currentBranch()
 }
@@ -319,6 +323,14 @@ export async function listBranchesWithBase(baseBranch: string): Promise<string[]
 
 export async function getCommitLog() {
   return Adapter().getCommitLog()
+}
+
+export async function executeRaw(statement: string) {
+  return Adapter().executeRaw(statement)
+}
+
+export async function diffStat(param1: string, param2: string) {
+  return Adapter().diffStat(param1, param2)
 }
 
 export async function merge(branch: string, squash: boolean = false): Promise<void> {

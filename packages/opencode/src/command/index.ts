@@ -64,6 +64,9 @@ export const Default = {
   BRANCH: "branch",
   CHECKOUT: "checkout",
   LOG: "log",
+  SQL: "sql",
+  CONTEXT: "context",
+  DIFF_STAT: "diff-stat",
 } as const
 
 export interface Interface {
@@ -148,6 +151,33 @@ export const layer = Layer.effect(
           return ""
         },
         hints: [],
+      }
+      commands[Default.SQL] = {
+        name: Default.SQL,
+        description: "run arbitrary SQL against the storage",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.CONTEXT] = {
+        name: Default.CONTEXT,
+        description: "show stats about the next LLM call's context (--show to dump it)",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.DIFF_STAT] = {
+        name: Default.DIFF_STAT,
+        description: "show per-table diff stats between two refs (default HEAD..WORKING)",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {

@@ -96,6 +96,9 @@ export const SessionPaths = {
   checkoutBranch: `${root}/:sessionID/checkout`,
   branches: `${root}/:sessionID/branches`,
   log: `${root}/:sessionID/log`,
+  sql: `${root}/:sessionID/sql`,
+  context: `${root}/:sessionID/context`,
+  diffStat: `${root}/:sessionID/diff-stat`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
@@ -447,6 +450,96 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.log",
             summary: "Get commit log",
             description: "Returns the dolt commit log for the active branch, newest first.",
+          }),
+        ),
+        HttpApiEndpoint.post("diffStat", SessionPaths.diffStat, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({
+            param1: Schema.String,
+            param2: Schema.String,
+          }),
+          success: described(
+            Schema.Struct({
+              param1: Schema.String,
+              param2: Schema.String,
+              tables: Schema.Array(
+                Schema.Struct({
+                  tableName: Schema.String,
+                  rowsUnmodified: Schema.Number,
+                  rowsAdded: Schema.Number,
+                  rowsDeleted: Schema.Number,
+                  rowsModified: Schema.Number,
+                  cellsAdded: Schema.Number,
+                  cellsDeleted: Schema.Number,
+                  cellsModified: Schema.Number,
+                  oldRowCount: Schema.Number,
+                  newRowCount: Schema.Number,
+                  oldCellCount: Schema.Number,
+                  newCellCount: Schema.Number,
+                  oldDataBytes: Schema.Number,
+                  newDataBytes: Schema.Number,
+                  dataBytesAdded: Schema.Number,
+                  dataBytesDeleted: Schema.Number,
+                  dataBytesModifiedDelta: Schema.Number,
+                }),
+              ),
+            }),
+            "Per-table diff stats for the context tables",
+          ),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.diffStat",
+            summary: "Diff stats",
+            description: "Runs DOLT_DIFF_STAT for every context table between param1 and param2.",
+          }),
+        ),
+        HttpApiEndpoint.get("context", SessionPaths.context, {
+          params: { sessionID: SessionID },
+          success: described(
+            Schema.Struct({
+              model: Schema.Struct({
+                providerID: Schema.String,
+                modelID: Schema.String,
+              }),
+              messages: Schema.Array(Schema.Unknown),
+            }),
+            "LLM context for the next call",
+          ),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.context",
+            summary: "Build LLM context",
+            description:
+              "Returns the message array that would be sent to the LLM on the next prompt, plus the resolved model.",
+          }),
+        ),
+        HttpApiEndpoint.post("sql", SessionPaths.sql, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ statement: Schema.String }),
+          success: described(
+            Schema.Union([
+              Schema.Struct({
+                kind: Schema.Literal("rows"),
+                columns: Schema.Array(Schema.String),
+                rows: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+              }),
+              Schema.Struct({
+                kind: Schema.Literal("result"),
+                affectedRows: Schema.optional(Schema.Number),
+                insertId: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+                info: Schema.optional(Schema.String),
+              }),
+            ]),
+            "Raw SQL result",
+          ),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.sql",
+            summary: "Execute raw SQL",
+            description: "Runs the supplied SQL statement against the storage and returns the result.",
           }),
         ),
         HttpApiEndpoint.post("permissionRespond", SessionPaths.permissions, {

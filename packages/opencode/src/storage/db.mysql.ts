@@ -596,6 +596,15 @@ export function init(connectionString: string): StorageAdapter {
       const row = (rows as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
     },
+    branchHash: async (branch: string): Promise<string> => {
+      const [rows] = await mysqlDb.execute(sql`SELECT hashof(${branch})`)
+      const row = (rows as Record<string, unknown>[])[0]
+      const value = row ? Object.values(row)[0] : undefined
+      if (typeof value !== "string" || value.length === 0) {
+        throw new Error(`Could not resolve hash for branch "${branch}"`)
+      }
+      return value
+    },
     hasCommitInHistory,
     listBranchesWithBase: async (baseBranch: string): Promise<string[]> => {
       const [rows] = await mysqlDb.execute(sql`SELECT name, hash FROM dolt_branches`)
@@ -612,6 +621,120 @@ export function init(connectionString: string): StorageAdapter {
         }
       }
       return result
+    },
+    diffStat: async (param1: string, param2: string) => {
+      // Tables that hold session-context state. Mirrors what the LLM-context
+      // builder reads from.
+      const tables = ["message", "part", "todo"]
+      // Tables whose payload size we care about (they have a `data` JSON
+      // column). Other tables get zeros for the byte fields.
+      const tablesWithData = new Set(["message", "part"])
+      const results: Array<{
+        tableName: string
+        rowsUnmodified: number
+        rowsAdded: number
+        rowsDeleted: number
+        rowsModified: number
+        cellsAdded: number
+        cellsDeleted: number
+        cellsModified: number
+        oldRowCount: number
+        newRowCount: number
+        oldCellCount: number
+        newCellCount: number
+        oldDataBytes: number
+        newDataBytes: number
+        dataBytesAdded: number
+        dataBytesDeleted: number
+        dataBytesModifiedDelta: number
+      }> = []
+      for (const table of tables) {
+        try {
+          const [rows] = await mysqlDb.execute(
+            sql`SELECT * FROM DOLT_DIFF_STAT(${param1}, ${param2}, ${table})`,
+          )
+          const arr = rows as Array<Record<string, unknown>>
+          if (arr.length === 0) continue
+          // Compute byte-size aggregates for the `data` column from DOLT_DIFF
+          // for tables that have one. Conditional sums let us cover all four
+          // change shapes (added / deleted / modified / unmodified) in a
+          // single SQL roundtrip.
+          let dataAgg = {
+            oldDataBytes: 0,
+            newDataBytes: 0,
+            dataBytesAdded: 0,
+            dataBytesDeleted: 0,
+            dataBytesModifiedDelta: 0,
+          }
+          if (tablesWithData.has(table)) {
+            const [aggRows] = await mysqlDb.execute(
+              sql`
+                SELECT
+                  COALESCE(SUM(LENGTH(from_data)), 0) AS old_bytes,
+                  COALESCE(SUM(LENGTH(to_data)), 0) AS new_bytes,
+                  COALESCE(SUM(CASE WHEN from_data IS NULL THEN LENGTH(to_data) ELSE 0 END), 0) AS bytes_added,
+                  COALESCE(SUM(CASE WHEN to_data IS NULL THEN LENGTH(from_data) ELSE 0 END), 0) AS bytes_deleted,
+                  COALESCE(SUM(CASE WHEN from_data IS NOT NULL AND to_data IS NOT NULL
+                                    THEN LENGTH(to_data) - LENGTH(from_data) ELSE 0 END), 0) AS bytes_modified_delta
+                FROM DOLT_DIFF(${param1}, ${param2}, ${table})
+              `,
+            )
+            const aggRow = (aggRows as Array<Record<string, unknown>>)[0] ?? {}
+            dataAgg = {
+              oldDataBytes: Number(aggRow.old_bytes ?? 0),
+              newDataBytes: Number(aggRow.new_bytes ?? 0),
+              dataBytesAdded: Number(aggRow.bytes_added ?? 0),
+              dataBytesDeleted: Number(aggRow.bytes_deleted ?? 0),
+              dataBytesModifiedDelta: Number(aggRow.bytes_modified_delta ?? 0),
+            }
+          }
+          for (const r of arr) {
+            results.push({
+              tableName: String(r.table_name ?? table),
+              rowsUnmodified: Number(r.rows_unmodified ?? 0),
+              rowsAdded: Number(r.rows_added ?? 0),
+              rowsDeleted: Number(r.rows_deleted ?? 0),
+              rowsModified: Number(r.rows_modified ?? 0),
+              cellsAdded: Number(r.cells_added ?? 0),
+              cellsDeleted: Number(r.cells_deleted ?? 0),
+              cellsModified: Number(r.cells_modified ?? 0),
+              oldRowCount: Number(r.old_row_count ?? 0),
+              newRowCount: Number(r.new_row_count ?? 0),
+              oldCellCount: Number(r.old_cell_count ?? 0),
+              newCellCount: Number(r.new_cell_count ?? 0),
+              ...dataAgg,
+            })
+          }
+        } catch (e) {
+          // Per-table errors (e.g. table dropped between refs) shouldn't tank
+          // the whole call. Surface them through the unwrap path.
+          throw new Error(`DOLT_DIFF_STAT(${param1}, ${param2}, ${table}): ${unwrapSqlError(e)}`)
+        }
+      }
+      return results
+    },
+    executeRaw: async (statement: string) => {
+      try {
+        const [result] = await mysqlDb.execute(sql.raw(statement))
+        if (Array.isArray(result)) {
+          const rows = result as Array<Record<string, unknown>>
+          const columns = rows.length > 0 ? Object.keys(rows[0]) : []
+          return { kind: "rows" as const, columns, rows }
+        }
+        const header = result as {
+          affectedRows?: number
+          insertId?: number | string
+          info?: string
+        }
+        return {
+          kind: "result" as const,
+          affectedRows: header.affectedRows,
+          insertId: header.insertId,
+          info: header.info,
+        }
+      } catch (e) {
+        throw new Error(unwrapSqlError(e))
+      }
     },
     getCommitLog: async () => {
       const [rows] = await mysqlDb.execute(

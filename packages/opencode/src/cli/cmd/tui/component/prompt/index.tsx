@@ -961,6 +961,222 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
+    } else if (inputText.startsWith("/diff-stat")) {
+      const rest = inputText.slice("/diff-stat".length).trim()
+      const tokens = rest.split(/\s+/).filter(Boolean)
+      if (tokens.length > 2) {
+        toast.show({
+          message: "Usage: /diff-stat  |  /diff-stat <ref>  |  /diff-stat <ref1> <ref2>",
+          variant: "error",
+        })
+        return false
+      }
+      const param1 = tokens[0] ?? "HEAD"
+      const param2 = tokens[1] ?? "WORKING"
+      try {
+        const res = await sdk.client.session.diffStat(
+          { sessionID, param1, param2 },
+          { throwOnError: true },
+        )
+        const data = res.data as unknown as
+          | {
+              param1: string
+              param2: string
+              tables: Array<{
+                tableName: string
+                rowsUnmodified: number
+                rowsAdded: number
+                rowsDeleted: number
+                rowsModified: number
+                cellsAdded: number
+                cellsDeleted: number
+                cellsModified: number
+                oldRowCount: number
+                newRowCount: number
+                oldCellCount: number
+                newCellCount: number
+                oldDataBytes: number
+                newDataBytes: number
+                dataBytesAdded: number
+                dataBytesDeleted: number
+                dataBytesModifiedDelta: number
+              }>
+            }
+          | undefined
+        if (!data) {
+          toast.show({ message: "No data returned", variant: "error" })
+          return false
+        }
+        const formatBytes = (n: number) => {
+          if (Math.abs(n) < 1024) return `${n} B`
+          if (Math.abs(n) < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+          return `${(n / (1024 * 1024)).toFixed(2)} MB`
+        }
+        const header = `Diff stat ${data.param1} → ${data.param2}`
+        const formatted = data.tables.map((t) => {
+          const rowDelta = t.newRowCount - t.oldRowCount
+          const sign = rowDelta > 0 ? `+${rowDelta}` : `${rowDelta}`
+          const lines = [
+            `${t.tableName}:`,
+            `  rows:   ${t.oldRowCount} → ${t.newRowCount} (${sign})`,
+            `  added:    +${t.rowsAdded} rows, +${t.cellsAdded} cells`,
+            `  deleted:  -${t.rowsDeleted} rows, -${t.cellsDeleted} cells`,
+            `  modified: ~${t.rowsModified} rows, ~${t.cellsModified} cells`,
+          ]
+          const hasBytes =
+            t.oldDataBytes !== 0 ||
+            t.newDataBytes !== 0 ||
+            t.dataBytesAdded !== 0 ||
+            t.dataBytesDeleted !== 0 ||
+            t.dataBytesModifiedDelta !== 0
+          if (hasBytes) {
+            const net = t.newDataBytes - t.oldDataBytes
+            const netSign = net > 0 ? `+${formatBytes(net)}` : formatBytes(net)
+            const modSign =
+              t.dataBytesModifiedDelta > 0
+                ? `+${formatBytes(t.dataBytesModifiedDelta)}`
+                : formatBytes(t.dataBytesModifiedDelta)
+            lines.push(
+              `  data:   ${formatBytes(t.oldDataBytes)} → ${formatBytes(t.newDataBytes)} (${netSign})`,
+              `    added rows:    +${formatBytes(t.dataBytesAdded)}`,
+              `    deleted rows:  -${formatBytes(t.dataBytesDeleted)}`,
+              `    modified rows: ${modSign}`,
+            )
+          }
+          return lines.join("\n")
+        })
+        const body =
+          data.tables.length === 0
+            ? `${header}\n\n(no changes to context tables)`
+            : `${header}\n\n${formatted.join("\n\n")}`
+        sync.session.appendLocalSystem(sessionID, body, "/diff-stat")
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to compute diff stat")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      // Clear the input the same way the post-submit block would have, then
+      // short-circuit with `return true` so nothing downstream can dispatch
+      // this input to the LLM (the catch-all server-command else-if AND the
+      // final `prompt(...)` else are both bypassed).
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      return true
+    } else if (inputText.startsWith("/context")) {
+      const rest = inputText.slice("/context".length).trim()
+      const show = rest === "--show"
+      if (rest && !show) {
+        toast.show({ message: "Usage: /context  or  /context --show", variant: "error" })
+        return false
+      }
+      try {
+        const res = await sdk.client.session.context({ sessionID }, { throwOnError: true })
+        const data = res.data as unknown as
+          | { model: { providerID: string; modelID: string }; messages: Array<Record<string, unknown>> }
+          | undefined
+        if (!data) {
+          toast.show({ message: "No context returned", variant: "error" })
+          return false
+        }
+        // Walk every message + content fragment to tally chars / role counts /
+        // tool-call counts — close enough to "what the LLM will see" for /context.
+        const roleCounts: Record<string, number> = {}
+        let totalChars = 0
+        let toolCallCount = 0
+        for (const m of data.messages) {
+          const role = String((m as { role?: string }).role ?? "?")
+          roleCounts[role] = (roleCounts[role] ?? 0) + 1
+          const content = (m as { content?: unknown }).content
+          if (typeof content === "string") {
+            totalChars += content.length
+          } else if (Array.isArray(content)) {
+            for (const c of content) {
+              const obj = c as { type?: string; text?: string; toolName?: string }
+              if (obj?.type === "text" && typeof obj.text === "string") totalChars += obj.text.length
+              else if (obj?.type === "tool-call") toolCallCount += 1
+              else totalChars += JSON.stringify(c).length
+            }
+          } else if (content !== undefined) {
+            totalChars += JSON.stringify(content).length
+          }
+        }
+        const estimatedTokens = Math.round(totalChars / 4)
+        const lines = [
+          `Provider:        ${data.model.providerID}`,
+          `Model:           ${data.model.modelID}`,
+          `Messages:        ${data.messages.length}`,
+          ...Object.entries(roleCounts).map(([r, n]) => `  ${r.padEnd(12)} ${n}`),
+          `Tool calls:      ${toolCallCount}`,
+          `Total chars:     ${totalChars}`,
+          `Approx tokens:   ${estimatedTokens}`,
+        ]
+        const body = show
+          ? `${lines.join("\n")}\n\n${JSON.stringify(data.messages, null, 2)}`
+          : lines.join("\n")
+        sync.session.appendLocalSystem(sessionID, body, "/context")
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to build context")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+    } else if (inputText.startsWith("/sql")) {
+      const statement = inputText.slice("/sql".length).trim()
+      if (!statement) {
+        toast.show({ message: "Usage: /sql <SQL STATEMENT>", variant: "error" })
+        return false
+      }
+      try {
+        const res = await sdk.client.session.sql({ sessionID, statement }, { throwOnError: true })
+        const data = res.data as
+          | { kind: "rows"; columns: string[]; rows: Array<Record<string, unknown>> }
+          | { kind: "result"; affectedRows?: number; insertId?: number | string; info?: string }
+          | undefined
+        let body: string
+        if (!data) {
+          body = "(no result)"
+        } else if (data.kind === "rows") {
+          if (data.rows.length === 0) {
+            body = "(0 rows)"
+          } else {
+            const cols = data.columns
+            const lines = [
+              cols.join(" | "),
+              cols.map((c) => "-".repeat(Math.max(3, c.length))).join("-+-"),
+              ...data.rows.map((row) =>
+                cols
+                  .map((c) => {
+                    const v = row[c]
+                    if (v === null || v === undefined) return "NULL"
+                    if (typeof v === "object") return JSON.stringify(v)
+                    return String(v)
+                  })
+                  .join(" | "),
+              ),
+            ]
+            body = lines.join("\n")
+          }
+        } else {
+          const parts: string[] = []
+          if (typeof data.affectedRows === "number") parts.push(`${data.affectedRows} row(s) affected`)
+          if (data.insertId !== undefined) parts.push(`insertId=${data.insertId}`)
+          if (data.info) parts.push(data.info)
+          body = parts.length > 0 ? parts.join(", ") : "OK"
+        }
+        sync.session.appendLocalSystem(sessionID, `${statement}\n\n${body}`, "/sql")
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to execute SQL")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
     } else if (inputText.startsWith("/log")) {
       const rest = inputText.slice("/log".length).trim()
       if (rest) {
@@ -972,7 +1188,7 @@ export function Prompt(props: PromptProps) {
         const entries = (res.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
         const body =
           entries.length === 0
-            ? "No commits on this branch."
+            ? "No commits in history yet."
             : `Commits on this branch (newest first):\n${entries
                 .map((e) => `  ${e.commitHash.slice(0, 8)}  ${e.date}  ${e.message}`)
                 .join("\n")}`

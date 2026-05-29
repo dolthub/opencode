@@ -5,6 +5,7 @@ import { Bus } from "@/bus"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
+import { Provider } from "@/provider/provider"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
@@ -54,6 +55,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const runState = yield* SessionRunState.Service
     const agentSvc = yield* Agent.Service
     const permissionSvc = yield* Permission.Service
+    const providerSvc = yield* Provider.Service
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
@@ -338,9 +340,136 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
-    const log = Effect.fn("SessionHttpApi.log")(function* (_ctx: {
+    const diffStat = Effect.fn("SessionHttpApi.diffStat")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { param1: string; param2: string }
+    }) {
+      const sessionID = ctx.params.sessionID
+      // BASE is a syntactic shorthand for "this project's base branch".
+      // Anything else (HEAD/WORKING/branch/commit/ancestor spec) is passed
+      // through to Dolt verbatim. The keyword match is case-insensitive
+      // (matches Dolt's HEAD/WORKING/STAGED keyword convention).
+      const isBase = (p: string) => p.toUpperCase() === "BASE"
+      const needsBase = isBase(ctx.payload.param1) || isBase(ctx.payload.param2)
+      const baseBranch = needsBase
+        ? yield* Effect.promise(() =>
+            Database.useAsync(async (db) => {
+              const sessionRow = (await db
+                .select({ project_id: SessionTable.project_id })
+                .from(SessionTable)
+                .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+              const projectID = sessionRow[0]?.project_id
+              if (!projectID) return undefined
+              const projectRow = (await db
+                .select({ base_branch: ProjectTable.base_branch })
+                .from(ProjectTable)
+                .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+              return projectRow[0]?.base_branch ?? undefined
+            }),
+          )
+        : undefined
+      if (needsBase && !baseBranch) {
+        return yield* Effect.fail(
+          commitError(`BASE used but project has no base_branch configured for session "${sessionID}"`),
+        )
+      }
+      const resolve = (p: string) => (isBase(p) ? baseBranch! : p)
+      const param1 = resolve(ctx.payload.param1)
+      const param2 = resolve(ctx.payload.param2)
+      const tables = yield* Effect.promise(() => Database.diffStat(param1, param2)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return { param1, param2, tables }
+    })
+
+    const context = Effect.fn("SessionHttpApi.context")(function* (ctx: {
       params: { sessionID: SessionID }
     }) {
+      const sessionID = ctx.params.sessionID
+      return yield* Effect.gen(function* () {
+        // Run the same compaction filter the real prompt path uses, so the
+        // returned context matches what would actually be sent next.
+        const msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+        // Resolve the model the next call would use: the most recent user
+        // message's model wins (matches lastModel() in SessionPrompt), falling
+        // back to the provider default.
+        const lastUser = msgs.findLast((m) => m.info.role === "user") as
+          | (MessageV2.WithParts & { info: MessageV2.User })
+          | undefined
+        const modelRef = lastUser?.info.model ?? (yield* providerSvc.defaultModel())
+        const model = yield* providerSvc.getModel(modelRef.providerID, modelRef.modelID)
+        const messages = yield* MessageV2.toModelMessagesEffect(msgs, model)
+        // Round-trip through JSON to strip `undefined` fields — the API
+        // response validator (Schema.Unknown via httpapi) rejects them.
+        const cleaned = JSON.parse(JSON.stringify(messages)) as readonly unknown[]
+        return {
+          model: { providerID: modelRef.providerID, modelID: modelRef.modelID },
+          messages: cleaned,
+        }
+      }).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const msg = err instanceof Error ? err.message : String(err)
+          return Effect.fail(commitError(`/context build failed: ${msg}`))
+        }),
+      )
+    })
+
+    const sql = Effect.fn("SessionHttpApi.sql")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { statement: string }
+    }) {
+      const statement = ctx.payload.statement.trim()
+      if (!statement) {
+        return yield* Effect.fail(commitError("SQL statement must be non-empty"))
+      }
+      return yield* Effect.promise(() => Database.executeRaw(statement)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+    })
+
+    const log = Effect.fn("SessionHttpApi.log")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const sessionID = ctx.params.sessionID
+      // Look up the project's base branch so we can clip the log to commits
+      // strictly newer than the base-branch creation point.
+      const baseBranch = yield* Effect.promise(() =>
+        Database.useAsync(async (db) => {
+          const sessionRow = (await db
+            .select({ project_id: SessionTable.project_id })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+          const projectID = sessionRow[0]?.project_id
+          if (!projectID) return undefined
+          const projectRow = (await db
+            .select({ base_branch: ProjectTable.base_branch })
+            .from(ProjectTable)
+            .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+          return projectRow[0]?.base_branch ?? undefined
+        }),
+      )
+      const baseHash = baseBranch
+        ? yield* Effect.promise(() => Database.branchHash(baseBranch)).pipe(
+            Effect.catchCause(() => Effect.succeed(undefined as string | undefined)),
+          )
+        : undefined
       const entries = yield* Effect.promise(() => Database.getCommitLog()).pipe(
         Effect.catchCause((cause) => {
           const err = Cause.squash(cause)
@@ -352,7 +481,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return Effect.fail(commitError(msg))
         }),
       )
-      return entries.map((e) => ({
+      // entries are newest-first; clip at (and excluding) the base branch's
+      // commit hash so the base-creation commit and everything older fall off.
+      const clipIndex = baseHash ? entries.findIndex((e) => e.commitHash === baseHash) : -1
+      const trimmed = clipIndex >= 0 ? entries.slice(0, clipIndex) : entries
+      return trimmed.map((e) => ({
         commitHash: e.commitHash,
         date: e.date instanceof Date ? e.date.toISOString() : String(e.date),
         message: e.message,
@@ -581,6 +714,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("checkoutBranch", checkoutBranch)
       .handle("branches", branches)
       .handle("log", log)
+      .handle("sql", sql)
+      .handle("context", context)
+      .handle("diffStat", diffStat)
       .handle("permissionRespond", permissionRespond)
       .handle("deleteMessage", deleteMessage)
       .handle("deletePart", deletePart)
