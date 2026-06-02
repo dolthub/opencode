@@ -712,17 +712,19 @@ const part = (row: typeof PartTable.$inferSelect) =>
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
 
-async function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
+async function hydrate(rows: (typeof MessageTable.$inferSelect)[], asOf?: string) {
   const ids = rows.map((row) => row.id)
   const partByMessage = new Map<string, Part[]>()
   if (ids.length > 0) {
     const partRows = await Database.useAsync((db) =>
-      db
-        .select()
-        .from(PartTable)
-        .where(inArray(PartTable.message_id, ids))
-        .orderBy(PartTable.message_id, PartTable.id)
-        .all(),
+      Database.selectAsOf<typeof PartTable.$inferSelect>(
+        db
+          .select()
+          .from(PartTable)
+          .where(inArray(PartTable.message_id, ids))
+          .orderBy(PartTable.message_id, PartTable.id),
+        asOf,
+      ),
     )
     for (const row of partRows) {
       const next = part(row)
@@ -1017,23 +1019,28 @@ export function toModelMessages(
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }
 
-export async function page(input: { sessionID: SessionID; limit: number; before?: string }) {
+export async function page(input: { sessionID: SessionID; limit: number; before?: string; asOf?: string }) {
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
     : eq(MessageTable.session_id, input.sessionID)
   const rows = await Database.useAsync((db) =>
-    db
-      .select()
-      .from(MessageTable)
-      .where(where)
-      .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
-      .limit(input.limit + 1)
-      .all(),
+    Database.selectAsOf<typeof MessageTable.$inferSelect>(
+      db
+        .select()
+        .from(MessageTable)
+        .where(where)
+        .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+        .limit(input.limit + 1),
+      input.asOf,
+    ),
   )
   if (rows.length === 0) {
     const row = await Database.useAsync((db) =>
-      db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get(),
+      Database.getAsOf<{ id: string }>(
+        db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)),
+        input.asOf,
+      ),
     )
     if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
     return {
@@ -1044,7 +1051,7 @@ export async function page(input: { sessionID: SessionID; limit: number; before?
 
   const more = rows.length > input.limit
   const slice = more ? rows.slice(0, input.limit) : rows
-  const items = await hydrate(slice)
+  const items = await hydrate(slice, input.asOf)
   items.reverse()
   const tail = slice.at(-1)
   return {
@@ -1054,11 +1061,11 @@ export async function page(input: { sessionID: SessionID; limit: number; before?
   }
 }
 
-export async function* stream(sessionID: SessionID) {
+export async function* stream(sessionID: SessionID, asOf?: string) {
   const size = 50
   let before: string | undefined
   while (true) {
-    const next = await page({ sessionID, limit: size, before })
+    const next = await page({ sessionID, limit: size, before, asOf })
     if (next.items.length === 0) break
     for (let i = next.items.length - 1; i >= 0; i--) {
       yield next.items[i]
@@ -1151,10 +1158,10 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   return result
 }
 
-export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
+export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID, asOf?: string) {
   return yield* Effect.promise(async () => {
     const items: WithParts[] = []
-    for await (const item of stream(sessionID)) {
+    for await (const item of stream(sessionID, asOf)) {
       items.push(item)
     }
     return filterCompacted(items)

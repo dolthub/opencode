@@ -1067,15 +1067,172 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
       input.clear()
       return true
-    } else if (inputText.startsWith("/context")) {
-      const rest = inputText.slice("/context".length).trim()
-      const show = rest === "--show"
-      if (rest && !show) {
-        toast.show({ message: "Usage: /context  or  /context --show", variant: "error" })
+    } else if (inputText.startsWith("/diff-context")) {
+      const rest = inputText.slice("/diff-context".length).trim()
+      const tokens = rest.split(/\s+/).filter(Boolean)
+      if (tokens.length > 2) {
+        toast.show({
+          message: "Usage: /diff-context  |  /diff-context <ref>  |  /diff-context <ref1> <ref2>",
+          variant: "error",
+        })
         return false
       }
+      const param1 = tokens[0] ?? "HEAD"
+      const param2 = tokens[1] ?? "WORKING"
       try {
-        const res = await sdk.client.session.context({ sessionID }, { throwOnError: true })
+        const [r1, r2] = await Promise.all([
+          sdk.client.session.context({ sessionID, as_of: param1 }, { throwOnError: true }),
+          sdk.client.session.context({ sessionID, as_of: param2 }, { throwOnError: true }),
+        ])
+        type ContextRes = {
+          model: { providerID: string; modelID: string }
+          messages: Array<Record<string, unknown>>
+        }
+        const d1 = r1.data as unknown as ContextRes | undefined
+        const d2 = r2.data as unknown as ContextRes | undefined
+        if (!d1 || !d2) {
+          toast.show({ message: "No context returned", variant: "error" })
+          return false
+        }
+        const stats = (data: ContextRes) => {
+          const roleCounts: Record<string, number> = {}
+          let totalChars = 0
+          let toolCallCount = 0
+          for (const m of data.messages) {
+            const role = String((m as { role?: string }).role ?? "?")
+            roleCounts[role] = (roleCounts[role] ?? 0) + 1
+            const content = (m as { content?: unknown }).content
+            if (typeof content === "string") {
+              totalChars += content.length
+            } else if (Array.isArray(content)) {
+              for (const c of content) {
+                const obj = c as { type?: string; text?: string }
+                if (obj?.type === "text" && typeof obj.text === "string") totalChars += obj.text.length
+                else if (obj?.type === "tool-call") toolCallCount += 1
+                else totalChars += JSON.stringify(c).length
+              }
+            } else if (content !== undefined) {
+              totalChars += JSON.stringify(content).length
+            }
+          }
+          return { roleCounts, totalChars, toolCallCount, estTokens: Math.round(totalChars / 4) }
+        }
+        const s1 = stats(d1)
+        const s2 = stats(d2)
+        const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`)
+        const modelA = `${d1.model.providerID}/${d1.model.modelID}`
+        const modelB = `${d2.model.providerID}/${d2.model.modelID}`
+        const header = `Context diff ${param1} → ${param2}`
+        const lines: string[] = [
+          modelA === modelB ? `Model:           ${modelA} (unchanged)` : `Model:           ${modelA} → ${modelB}`,
+          "",
+          `Messages:        ${d1.messages.length} → ${d2.messages.length} (${sign(d2.messages.length - d1.messages.length)})`,
+        ]
+        const roles = new Set([...Object.keys(s1.roleCounts), ...Object.keys(s2.roleCounts)])
+        for (const r of [...roles].sort()) {
+          const a = s1.roleCounts[r] ?? 0
+          const b = s2.roleCounts[r] ?? 0
+          lines.push(`  ${r.padEnd(12)} ${a} → ${b} (${sign(b - a)})`)
+        }
+        lines.push(
+          "",
+          `Tool calls:      ${s1.toolCallCount} → ${s2.toolCallCount} (${sign(s2.toolCallCount - s1.toolCallCount)})`,
+          `Total chars:     ${s1.totalChars} → ${s2.totalChars} (${sign(s2.totalChars - s1.totalChars)})`,
+          `Approx tokens:   ${s1.estTokens} → ${s2.estTokens} (${sign(s2.estTokens - s1.estTokens)})`,
+        )
+        // Position-based diff: walk both message arrays in lockstep and label
+        // each index as identical / added / removed / changed. Collapse
+        // contiguous "identical" runs into a single range line so long stable
+        // prefixes don't drown out the actual changes.
+        type Change = { idx: number; kind: "added" | "removed" | "changed"; role: string; delta?: number }
+        const changes: Change[] = []
+        const identicalRanges: Array<[number, number]> = []
+        const max = Math.max(d1.messages.length, d2.messages.length)
+        let runStart: number | null = null
+        const charsOf = (m: Record<string, unknown> | undefined) => {
+          if (!m) return 0
+          const c = (m as { content?: unknown }).content
+          if (typeof c === "string") return c.length
+          if (Array.isArray(c)) return c.reduce((acc, x) => acc + JSON.stringify(x).length, 0)
+          if (c !== undefined) return JSON.stringify(c).length
+          return 0
+        }
+        const flushRun = (end: number) => {
+          if (runStart !== null) {
+            identicalRanges.push([runStart, end - 1])
+            runStart = null
+          }
+        }
+        for (let i = 0; i < max; i++) {
+          const a = d1.messages[i] as Record<string, unknown> | undefined
+          const b = d2.messages[i] as Record<string, unknown> | undefined
+          if (a === undefined && b !== undefined) {
+            flushRun(i)
+            changes.push({ idx: i, kind: "added", role: String(b.role ?? "?"), delta: charsOf(b) })
+          } else if (a !== undefined && b === undefined) {
+            flushRun(i)
+            changes.push({ idx: i, kind: "removed", role: String(a.role ?? "?"), delta: -charsOf(a) })
+          } else if (JSON.stringify(a) !== JSON.stringify(b)) {
+            flushRun(i)
+            changes.push({ idx: i, kind: "changed", role: String(b!.role ?? "?"), delta: charsOf(b) - charsOf(a) })
+          } else {
+            if (runStart === null) runStart = i
+          }
+        }
+        flushRun(max)
+        lines.push("", "Changes by position:")
+        if (changes.length === 0 && identicalRanges.length === 0) {
+          lines.push("  (both contexts empty)")
+        } else {
+          // Interleave identical ranges and individual changes in index order
+          // so the output reads top-to-bottom along the message timeline.
+          const events: Array<{ idx: number; line: string }> = []
+          for (const [a, b] of identicalRanges) {
+            events.push({
+              idx: a,
+              line: a === b ? `  [${a}]      identical` : `  [${a}..${b}]  identical (${b - a + 1} msgs)`,
+            })
+          }
+          for (const c of changes) {
+            const deltaStr = c.delta !== undefined ? ` (${sign(c.delta)} chars)` : ""
+            events.push({ idx: c.idx, line: `  [${c.idx}]      ${c.kind.padEnd(8)} ${c.role}${deltaStr}` })
+          }
+          events.sort((x, y) => x.idx - y.idx)
+          for (const e of events) lines.push(e.line)
+        }
+        const body = `${header}\n\n${lines.join("\n")}`
+        sync.session.appendLocalSystem(sessionID, body, "/diff-context")
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to compute context diff")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      return true
+    } else if (inputText.startsWith("/context")) {
+      const rest = inputText.slice("/context".length).trim()
+      const tokens = rest ? rest.split(/\s+/) : []
+      const show = tokens.includes("--show")
+      const positional = tokens.filter((t) => t !== "--show")
+      if (positional.length > 1) {
+        toast.show({
+          message: "Usage: /context [<as_of>] [--show]",
+          variant: "error",
+        })
+        return false
+      }
+      const asOf = positional[0]
+      try {
+        const res = await sdk.client.session.context(
+          { sessionID, ...(asOf ? { as_of: asOf } : {}) },
+          { throwOnError: true },
+        )
         const data = res.data as unknown as
           | { model: { providerID: string; modelID: string }; messages: Array<Record<string, unknown>> }
           | undefined
@@ -1107,6 +1264,7 @@ export function Prompt(props: PromptProps) {
         }
         const estimatedTokens = Math.round(totalChars / 4)
         const lines = [
+          ...(asOf ? [`AS OF:           ${asOf}`] : []),
           `Provider:        ${data.model.providerID}`,
           `Model:           ${data.model.modelID}`,
           `Messages:        ${data.messages.length}`,

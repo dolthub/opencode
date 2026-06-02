@@ -496,6 +496,7 @@ export const SessionApi = HttpApi.make("session")
         ),
         HttpApiEndpoint.get("context", SessionPaths.context, {
           params: { sessionID: SessionID },
+          query: Schema.Struct({ as_of: Schema.optional(Schema.String) }),
           success: described(
             Schema.Struct({
               model: Schema.Struct({

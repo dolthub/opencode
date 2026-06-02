@@ -329,6 +329,63 @@ export async function executeRaw(statement: string) {
   return Adapter().executeRaw(statement)
 }
 
+// MySQL-style escape for inlining drizzle's positional `?` params when we
+// have to rewrite the SQL to include an `AS OF '…'` clause. (Drizzle's
+// `sql.raw` carries no bound params, and Dolt's `AS OF` clause must appear
+// inside the FROM, so we route through executeRaw with fully-inlined SQL.)
+function escapeMySqlValue(v: unknown): string {
+  if (v === null || v === undefined) return "NULL"
+  if (typeof v === "number" || typeof v === "boolean") return String(v)
+  if (typeof v === "bigint") return v.toString()
+  if (v instanceof Date) return `'${v.toISOString().slice(0, 19).replace("T", " ")}'`
+  const s = String(v)
+  return `'${s.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`
+}
+
+type DrizzleSelectish = {
+  toSQL(): { sql: string; params: unknown[] }
+  all(): unknown[] | Promise<unknown[]>
+  get?(): unknown | Promise<unknown>
+}
+
+/**
+ * Execute a drizzle SELECT query, optionally rewriting it so each `FROM
+ * <table>` becomes `FROM <table> AS OF '<asOf>'`. When `asOf` is not set the
+ * query runs through drizzle normally. When set the SQL is compiled, the
+ * AS OF clause is injected after each FROM, drizzle's positional params are
+ * inlined as escaped literals, and the result is executed via the adapter's
+ * raw SQL path. Only the mysql/Dolt adapter supports AS OF; non-mysql
+ * adapters throw if `asOf` is provided.
+ */
+export async function selectAsOf<T>(query: DrizzleSelectish, asOf?: string): Promise<T[]> {
+  if (!asOf) return (await query.all()) as T[]
+  const adapter = Adapter()
+  if (!adapter.mysqlDb) {
+    throw new Error("AS OF is only supported on the MySQL/Dolt adapter")
+  }
+  const compiled = query.toSQL()
+  const escapedAsOf = asOf.replace(/'/g, "''")
+  const sqlWithAsOf = compiled.sql.replace(
+    /\sfrom\s+(`[^`]+`)/gi,
+    ` from $1 AS OF '${escapedAsOf}'`,
+  )
+  let i = 0
+  const finalSql = sqlWithAsOf.replace(/\?/g, () => escapeMySqlValue(compiled.params[i++]))
+  const result = await adapter.executeRaw(finalSql)
+  if (result.kind !== "rows") return [] as T[]
+  return result.rows as T[]
+}
+
+/** Same as selectAsOf, but returns the first row (or undefined). */
+export async function getAsOf<T>(query: DrizzleSelectish, asOf?: string): Promise<T | undefined> {
+  if (!asOf) {
+    if (!query.get) return (await query.all() as T[])[0]
+    return (await query.get()) as T | undefined
+  }
+  const rows = await selectAsOf<T>(query, asOf)
+  return rows[0]
+}
+
 export async function diffStat(param1: string, param2: string) {
   return Adapter().diffStat(param1, param2)
 }

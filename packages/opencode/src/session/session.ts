@@ -435,7 +435,7 @@ export interface Interface {
   }) => Effect.Effect<Info>
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
-  readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
+  readonly get: (id: SessionID, asOf?: string) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: Permission.Ruleset }) => Effect.Effect<void>
@@ -540,8 +540,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       return result
     })
 
-    const get = Effect.fn("Session.get")(function* (id: SessionID) {
-      const row = yield* db((d) => d.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+    const get = Effect.fn("Session.get")(function* (id: SessionID, asOf?: string) {
+      const row = yield* db((d) =>
+        Database.getAsOf<SessionRow>(d.select().from(SessionTable).where(eq(SessionTable.id, id)), asOf),
+      )
       if (!row) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${id}` }))
       return fromRow(row)
     })

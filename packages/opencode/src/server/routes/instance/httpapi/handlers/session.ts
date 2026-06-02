@@ -392,12 +392,43 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     const context = Effect.fn("SessionHttpApi.context")(function* (ctx: {
       params: { sessionID: SessionID }
+      query: { as_of?: string }
     }) {
       const sessionID = ctx.params.sessionID
+      // BASE is a syntactic shorthand for "this project's base branch".
+      // Anything else is passed through to Dolt verbatim. Matches the
+      // case-insensitive convention used by /diff-stat.
+      const rawAsOf = ctx.query.as_of
+      const asOf = rawAsOf && rawAsOf.toUpperCase() === "BASE"
+        ? yield* Effect.promise(() =>
+            Database.useAsync(async (db) => {
+              const sessionRow = (await db
+                .select({ project_id: SessionTable.project_id })
+                .from(SessionTable)
+                .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+              const projectID = sessionRow[0]?.project_id
+              if (!projectID) return undefined
+              const projectRow = (await db
+                .select({ base_branch: ProjectTable.base_branch })
+                .from(ProjectTable)
+                .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+              return projectRow[0]?.base_branch ?? undefined
+            }),
+          ).pipe(
+            Effect.flatMap((b) =>
+              b
+                ? Effect.succeed(b)
+                : Effect.fail(commitError(`BASE used but project has no base_branch configured for session "${sessionID}"`)),
+            ),
+          )
+        : rawAsOf
       return yield* Effect.gen(function* () {
         // Run the same compaction filter the real prompt path uses, so the
-        // returned context matches what would actually be sent next.
-        const msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+        // returned context matches what would actually be sent next. When
+        // `as_of` is set, all underlying SELECTs are rewritten with
+        // `FROM <table> AS OF '<as_of>'` so the build reflects historical
+        // state.
+        const msgs = yield* MessageV2.filterCompactedEffect(sessionID, asOf)
         // Resolve the model the next call would use: the most recent user
         // message's model wins (matches lastModel() in SessionPrompt), falling
         // back to the provider default.

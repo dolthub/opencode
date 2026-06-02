@@ -67,6 +67,7 @@ export const Default = {
   SQL: "sql",
   CONTEXT: "context",
   DIFF_STAT: "diff-stat",
+  DIFF_CONTEXT: "diff-context",
 } as const
 
 export interface Interface {
@@ -173,6 +174,15 @@ export const layer = Layer.effect(
       commands[Default.DIFF_STAT] = {
         name: Default.DIFF_STAT,
         description: "show per-table diff stats between two refs (default HEAD..WORKING)",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.DIFF_CONTEXT] = {
+        name: Default.DIFF_CONTEXT,
+        description: "diff the LLM context between two refs (default HEAD..WORKING)",
         source: "command",
         get template() {
           return ""
