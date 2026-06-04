@@ -317,7 +317,7 @@ export async function currentBranch(): Promise<string> {
   return Adapter().currentBranch()
 }
 
-export async function listBranchesWithBase(baseBranch: string): Promise<string[]> {
+export async function listBranchesWithBase(baseBranch: string) {
   return Adapter().listBranchesWithBase(baseBranch)
 }
 
@@ -392,6 +392,10 @@ export async function diffStat(param1: string, param2: string) {
 
 export async function merge(branch: string, squash: boolean = false): Promise<void> {
   await Adapter().merge(branch, squash)
+}
+
+export async function reset(ref: string): Promise<void> {
+  await Adapter().reset(ref)
 }
 
 export async function checkoutNew(name: string, force: boolean = false): Promise<void> {

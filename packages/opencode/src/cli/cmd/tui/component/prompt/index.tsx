@@ -28,6 +28,7 @@ import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import * as Editor from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import * as Clipboard from "../../util/clipboard"
+import { fetchHistoryWithCommits, type HistoryPrompt } from "../../util/history"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
@@ -1344,11 +1345,34 @@ export function Prompt(props: PromptProps) {
       try {
         const res = await sdk.client.session.log({ sessionID }, { throwOnError: true })
         const entries = (res.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
+        // Find the shortest prefix length that keeps all hashes unique, then
+        // take max(that, 8) so the column is at least git's default abbrev
+        // width and grows longer when needed to guarantee no collisions.
+        const minUniqueLen = (() => {
+          if (entries.length <= 1) return 1
+          const hashes = entries.map((e) => e.commitHash)
+          const maxLen = Math.max(...hashes.map((h) => h.length))
+          for (let L = 1; L <= maxLen; L++) {
+            const seen = new Set<string>()
+            let collision = false
+            for (const h of hashes) {
+              const p = h.slice(0, L)
+              if (seen.has(p)) {
+                collision = true
+                break
+              }
+              seen.add(p)
+            }
+            if (!collision) return L
+          }
+          return maxLen
+        })()
+        const hashLen = Math.max(minUniqueLen, 8)
         const body =
           entries.length === 0
             ? "No commits in history yet."
             : `Commits on this branch (newest first):\n${entries
-                .map((e) => `  ${e.commitHash.slice(0, 8)}  ${e.date}  ${e.message}`)
+                .map((e) => `  ${e.commitHash.slice(0, hashLen)}  ${e.date}  ${e.message}`)
                 .join("\n")}`
         sync.session.appendLocalSystem(sessionID, body, "/log")
       } catch (error) {
@@ -1358,26 +1382,359 @@ export function Prompt(props: PromptProps) {
         toast.show({ message: msg, variant: "error" })
         return false
       }
+    } else if (inputText.startsWith("/history")) {
+      const rest = inputText.slice("/history".length).trim()
+      const tokens = rest ? rest.split(/\s+/) : []
+      const verbose = tokens.length === 1 && tokens[0] === "-v"
+      if (tokens.length > 1 || (tokens.length === 1 && tokens[0].startsWith("-") && !verbose)) {
+        toast.show({
+          message: "Usage: /history  |  /history -v  |  /history <ref>",
+          variant: "error",
+        })
+        return false
+      }
+      let asOf = verbose ? undefined : tokens[0]
+      try {
+        // Same resolution rule used by /branch: a short pure-base32 string
+        // is treated as a possibly-truncated commit hash from /log and
+        // expanded to the full hash before being sent as as_of. Branch
+        // names, revision specs like HEAD~1, and BASE pass through.
+        if (asOf) {
+          const looksLikeHashPrefix = /^[0-9a-v]+$/i.test(asOf) && asOf.length < 32
+          if (looksLikeHashPrefix) {
+            const logRes = await sdk.client.session.log({ sessionID }, { throwOnError: true })
+            const entries = (logRes.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
+            const lower = asOf.toLowerCase()
+            const matches = entries.filter((e) => e.commitHash.toLowerCase().startsWith(lower))
+            if (matches.length === 1) {
+              asOf = matches[0].commitHash
+            } else if (matches.length > 1) {
+              toast.show({
+                message: `Ambiguous ref "${asOf}" — matches ${matches.length} commits`,
+                variant: "error",
+              })
+              return false
+            }
+            // 0 matches: fall through with the original token. Might be a
+            // branch name that happens to be all base32 chars.
+          }
+        }
+        // Shared formatters
+        const subject = (text: string) => text.replace(/\s+/g, " ").trim()
+        const MAX_TEXT = 100
+        const truncate = (s: string) => (s.length <= MAX_TEXT ? s : `${s.slice(0, MAX_TEXT - 1)}…`)
+        const formatTime = (ms: number) => {
+          const d = new Date(ms)
+          const pad = (n: number) => String(n).padStart(2, "0")
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+        }
+        const commitSubject = (msg: string) => msg.split(/\r?\n/)[0].trimEnd()
+        if (verbose) {
+          const { allPrompts, groups, uncommitted } = await fetchHistoryWithCommits(
+            sdk.client,
+            sessionID,
+          )
+          const commits = groups.map((g) => g.commit)
+          // Hash truncation: same algorithm as /log — shortest unique prefix,
+          // at least 8 chars. Dedupe by hash so two branches pointing at the
+          // same commit don't force the algorithm out to full length.
+          const minUniqueLen = (() => {
+            const hashes = [...new Set(commits.map((c) => c.commitHash))]
+            if (hashes.length <= 1) return 1
+            const maxLen = Math.max(...hashes.map((h) => h.length))
+            for (let L = 1; L <= maxLen; L++) {
+              const seen = new Set<string>()
+              let collision = false
+              for (const h of hashes) {
+                const pfx = h.slice(0, L)
+                if (seen.has(pfx)) {
+                  collision = true
+                  break
+                }
+                seen.add(pfx)
+              }
+              if (!collision) return L
+            }
+            return maxLen
+          })()
+          const hashLen = Math.max(minUniqueLen, 8)
+          const idxWidth = String(allPrompts.length).length
+          const indexOf = new Map<string, number>()
+          for (let i = 0; i < allPrompts.length; i++) indexOf.set(allPrompts[i].id, i + 1)
+          const renderPrompt = (p: HistoryPrompt) => {
+            const idx = `[${String(indexOf.get(p.id) ?? "?").padStart(idxWidth)}]`
+            return `  ${idx}  ${formatTime(p.time)}  ${truncate(subject(p.text))}`
+          }
+          if (allPrompts.length === 0) {
+            sync.session.appendLocalSystem(sessionID, "No prompts have been run yet.", "/history")
+          } else {
+            const sections: string[] = []
+            for (const g of groups) {
+              const lines = g.prompts.map(renderPrompt)
+              lines.push(
+                `Commit ${g.commit.commitHash.slice(0, hashLen)} - ${commitSubject(g.commit.message)}`,
+              )
+              sections.push(lines.join("\n"))
+            }
+            if (uncommitted.length > 0) sections.push(uncommitted.map(renderPrompt).join("\n"))
+            sync.session.appendLocalSystem(sessionID, sections.join("\n\n"), "/history")
+          }
+        } else {
+          const res = await sdk.client.session.history(
+            { sessionID, ...(asOf ? { as_of: asOf } : {}) },
+            { throwOnError: true },
+          )
+          const entries = (res.data ?? []) as Array<{ id: string; time: number; text: string }>
+          if (entries.length === 0) {
+            const empty = asOf
+              ? `No prompts found as of ${asOf}.`
+              : "No prompts have been run yet."
+            sync.session.appendLocalSystem(sessionID, empty, "/history")
+          } else {
+            // Compact one-line-per-prompt view, oldest first. Long prompts get
+            // truncated at a width that keeps each line readable in the TUI;
+            // newlines collapsed to a single-line subject.
+            const idxWidth = String(entries.length).length
+            const lines = entries.map((e, i) => {
+              const idx = `[${String(i + 1).padStart(idxWidth)}]`
+              return `${idx}  ${formatTime(e.time)}  ${truncate(subject(e.text))}`
+            })
+            const header = asOf
+              ? `Prompts as of ${asOf} (oldest first):`
+              : "Prompts in this session (oldest first):"
+            sync.session.appendLocalSystem(sessionID, `${header}\n${lines.join("\n")}`, "/history")
+          }
+        }
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to fetch history")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      return true
     } else if (inputText.startsWith("/branch")) {
       const rest = inputText.slice("/branch".length).trim()
-      if (rest) {
-        toast.show({ message: "Usage: /branch  (no arguments yet)", variant: "error" })
+      const allTokens = rest ? rest.split(/\s+/) : []
+      // Extract -m <message> first; everything after -m is the commit message.
+      // Strip those tokens so the structural parsing below only sees positional
+      // args (`<name>`, `<ref>` / `[N]`, `-v`).
+      const mIdx = allTokens.indexOf("-m")
+      const tokens = mIdx >= 0 ? allTokens.slice(0, mIdx) : allTokens
+      const mMessage = mIdx >= 0 ? allTokens.slice(mIdx + 1).join(" ").trim() : undefined
+      // `/branch <name> [N]` — create a branch at the state immediately after
+      // user prompt N. If a commit already exists whose cumulative prompt
+      // count is exactly N, the branch points at that commit. Otherwise the
+      // server synthesizes a commit on top of the closest prior commit, and
+      // -m is required.
+      if (tokens.length === 2 && /^\[\d+\]$/.test(tokens[1])) {
+        const name = tokens[0]
+        const promptIndex = parseInt(tokens[1].slice(1, -1), 10)
+        try {
+          const data = await fetchHistoryWithCommits(sdk.client, sessionID)
+          if (promptIndex < 1 || promptIndex > data.allPrompts.length) {
+            toast.show({
+              message: `Prompt [${promptIndex}] is out of range (have ${data.allPrompts.length})`,
+              variant: "error",
+            })
+            return false
+          }
+          const promptID = data.allPrompts[promptIndex - 1].id
+          const nextPromptID = data.allPrompts[promptIndex]?.id // undefined if N is the latest prompt
+          // Walk groups oldest-first, tracking cumulative prompt count. If
+          // cumulative hits exactly N at some commit, that commit's state IS
+          // "state after prompt N" — use createBranchAt and we're done.
+          // Otherwise remember the last commit whose cumulative is < N so we
+          // can synthesize on top of it.
+          let cumulative = 0
+          let directCommit: typeof data.groups[number] | undefined
+          let priorCommit: typeof data.groups[number] | undefined
+          for (const g of data.groups) {
+            cumulative += g.prompts.length
+            if (cumulative === promptIndex) {
+              directCommit = g
+              break
+            }
+            if (cumulative < promptIndex) {
+              priorCommit = g
+            } else {
+              break
+            }
+          }
+          if (directCommit) {
+            await sdk.client.session.createBranchAt(
+              { sessionID, branch: name, ref: directCommit.commit.commitHash },
+              { throwOnError: true },
+            )
+            sync.session.appendLocalSystem(
+              sessionID,
+              `Created branch '${name}' at ${directCommit.commit.commitHash.slice(0, 8)} (state after prompt [${promptIndex}])`,
+              "/branch",
+            )
+          } else {
+            if (!mMessage) {
+              toast.show({
+                message: `Prompt [${promptIndex}] is not at a commit boundary; supply -m <message>`,
+                variant: "error",
+              })
+              return false
+            }
+            await sdk.client.session.branchFromPrompt(
+              {
+                sessionID,
+                branch: name,
+                promptID,
+                ...(nextPromptID ? { nextPromptID } : {}),
+                ...(priorCommit ? { priorCommit: priorCommit.commit.commitHash } : {}),
+                commitMessage: mMessage,
+              },
+              { throwOnError: true },
+            )
+            const where = priorCommit
+              ? `on top of ${priorCommit.commit.commitHash.slice(0, 8)}`
+              : "on top of the project's base branch"
+            sync.session.appendLocalSystem(
+              sessionID,
+              `Created branch '${name}' with synthetic commit ${where} capturing state after prompt [${promptIndex}]`,
+              "/branch",
+            )
+          }
+        } catch (error) {
+          const msg =
+            (error as any)?.message ??
+            (error instanceof Error ? error.message : "Failed to create branch")
+          toast.show({ message: msg, variant: "error" })
+          return false
+        }
+        history.append({ ...store.prompt, mode: currentMode })
+        input.extmarks.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        input.clear()
+        return true
+      }
+      if (tokens.length === 2) {
+        const name = tokens[0]
+        let ref = tokens[1]
+        try {
+          // Dolt commit hashes are 32-char base32 (0-9, a-v). If the user
+          // pasted a shorter all-base32-alphabet string, treat it as a
+          // possibly-truncated hash and resolve to a full hash via /log.
+          // Anything that's NOT pure base32 (e.g. a branch name like "main"
+          // or a revision spec like "HEAD~1") passes through untouched —
+          // dolt_branch accepts those forms directly.
+          const looksLikeHashPrefix = /^[0-9a-v]+$/i.test(ref) && ref.length < 32
+          if (looksLikeHashPrefix) {
+            const logRes = await sdk.client.session.log({ sessionID }, { throwOnError: true })
+            const entries = (logRes.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
+            const lower = ref.toLowerCase()
+            const matches = entries.filter((e) => e.commitHash.toLowerCase().startsWith(lower))
+            if (matches.length === 1) {
+              ref = matches[0].commitHash
+            } else if (matches.length > 1) {
+              toast.show({
+                message: `Ambiguous ref "${ref}" — matches ${matches.length} commits`,
+                variant: "error",
+              })
+              return false
+            }
+            // 0 matches: fall through with the original token. It might be a
+            // branch name that happens to be all base32 chars; let dolt_branch
+            // decide.
+          }
+          await sdk.client.session.createBranchAt(
+            { sessionID, branch: name, ref },
+            { throwOnError: true },
+          )
+          sync.session.appendLocalSystem(
+            sessionID,
+            `Created branch '${name}' at ${ref}`,
+            "/branch",
+          )
+        } catch (error) {
+          const msg =
+            (error as any)?.message ??
+            (error instanceof Error ? error.message : "Failed to create branch")
+          toast.show({ message: msg, variant: "error" })
+          return false
+        }
+        history.append({ ...store.prompt, mode: currentMode })
+        input.extmarks.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        input.clear()
+        return true
+      }
+      const verbose = tokens.length === 1 && tokens[0] === "-v"
+      if (tokens.length === 1 && !verbose) {
+        toast.show({
+          message: "Usage: /branch  |  /branch -v  |  /branch <name> <ref>",
+          variant: "error",
+        })
         return false
       }
       try {
         const res = await sdk.client.session.branches({ sessionID }, { throwOnError: true })
         const data = (res.data ?? { current: null, branches: [] }) as {
           current: string | null
-          branches: string[]
+          branches: Array<{ name: string; commitHash: string; commitMessage: string }>
         }
         const list = data.branches
         const current = data.current
-        const body =
-          list.length === 0
-            ? "No branches forked from this project's base."
-            : `Branches forked from this project's base:\n${list
-                .map((b) => (b === current ? `► ${b}` : `  • ${b}`))
-                .join("\n")}`
+        let body: string
+        if (list.length === 0) {
+          body = "No branches forked from this project's base."
+        } else if (!verbose) {
+          body = `Branches forked from this project's base:\n${list
+            .map((b) => (b.name === current ? `► ${b.name}` : `  • ${b.name}`))
+            .join("\n")}`
+        } else {
+          // git-branch-v style: marker + name + short-hash + commit subject.
+          // Hash prefix length is the shortest that disambiguates all branch
+          // heads, capped below by /log's display width (8) so the column
+          // doesn't get smaller than the log shows. Multiple branches can
+          // point at the same commit, so dedupe before the uniqueness check —
+          // otherwise an exact-duplicate hash would force the algorithm to
+          // grow all the way to the full hash length.
+          const minUniqueLen = (() => {
+            const hashes = [...new Set(list.map((b) => b.commitHash))]
+            if (hashes.length <= 1) return 1
+            const maxLen = Math.max(...hashes.map((h) => h.length))
+            for (let L = 1; L <= maxLen; L++) {
+              const seen = new Set<string>()
+              let collision = false
+              for (const h of hashes) {
+                const p = h.slice(0, L)
+                if (seen.has(p)) {
+                  collision = true
+                  break
+                }
+                seen.add(p)
+              }
+              if (!collision) return L
+            }
+            return maxLen
+          })()
+          const hashLen = Math.max(minUniqueLen, 8)
+          const nameWidth = Math.max(...list.map((b) => b.name.length))
+          // First line of the commit message only (mirrors `git branch -v`).
+          // Handle CRLF and LF, and strip any trailing whitespace so a stray
+          // \r doesn't reposition the cursor in the terminal render.
+          const subject = (msg: string) => msg.split(/\r?\n/)[0].trimEnd()
+          body = `Branches forked from this project's base:\n${list
+            .map((b) => {
+              const marker = b.name === current ? "►" : " "
+              const name = b.name.padEnd(nameWidth)
+              const hash = b.commitHash.slice(0, hashLen)
+              return `${marker} ${name}  ${hash}  ${subject(b.commitMessage)}`
+            })
+            .join("\n")}`
+        }
         sync.session.appendLocalSystem(sessionID, body, "/branch")
       } catch (error) {
         const msg =
@@ -1426,6 +1783,117 @@ export function Prompt(props: PromptProps) {
         message: create ? `Switched to new branch '${branch}'` : `Checked out branch '${branch}'`,
         variant: "success",
       })
+      return true
+    } else if (inputText.startsWith("/reset")) {
+      const rest = inputText.slice("/reset".length).trim()
+      const tokens = rest ? rest.split(/\s+/) : []
+      if (tokens.length > 1) {
+        toast.show({
+          message: "Usage: /reset  |  /reset <ref>  |  /reset [N]",
+          variant: "error",
+        })
+        return false
+      }
+      let ref = tokens[0] ?? "HEAD"
+      try {
+        if (/^\[\d+\]$/.test(ref)) {
+          // Prompt syntax: reset to the state right after prompt N. If a
+          // commit's cumulative prompts equal N, reset directly to that
+          // commit. Otherwise reset to the closest prior commit and re-INSERT
+          // the diff so the working state ends up at the post-prompt-N state.
+          const promptIndex = parseInt(ref.slice(1, -1), 10)
+          const data = await fetchHistoryWithCommits(sdk.client, sessionID)
+          if (promptIndex < 1 || promptIndex > data.allPrompts.length) {
+            toast.show({
+              message: `Prompt [${promptIndex}] is out of range (have ${data.allPrompts.length})`,
+              variant: "error",
+            })
+            return false
+          }
+          const promptID = data.allPrompts[promptIndex - 1].id
+          const nextPromptID = data.allPrompts[promptIndex]?.id
+          let cumulative = 0
+          let directCommit: typeof data.groups[number] | undefined
+          let priorCommit: typeof data.groups[number] | undefined
+          for (const g of data.groups) {
+            cumulative += g.prompts.length
+            if (cumulative === promptIndex) {
+              directCommit = g
+              break
+            }
+            if (cumulative < promptIndex) {
+              priorCommit = g
+            } else {
+              break
+            }
+          }
+          if (directCommit) {
+            await sdk.client.session.reset(
+              { sessionID, ref: directCommit.commit.commitHash },
+              { throwOnError: true },
+            )
+            sync.session.appendLocalSystem(
+              sessionID,
+              `Reset to ${directCommit.commit.commitHash.slice(0, 8)} (state after prompt [${promptIndex}])`,
+              "/reset",
+            )
+          } else {
+            await sdk.client.session.resetToPrompt(
+              {
+                sessionID,
+                promptID,
+                ...(nextPromptID ? { nextPromptID } : {}),
+                ...(priorCommit ? { priorCommit: priorCommit.commit.commitHash } : {}),
+              },
+              { throwOnError: true },
+            )
+            const where = priorCommit
+              ? priorCommit.commit.commitHash.slice(0, 8)
+              : "project base"
+            sync.session.appendLocalSystem(
+              sessionID,
+              `Reset to ${where} and re-applied diff to reach state after prompt [${promptIndex}]`,
+              "/reset",
+            )
+          }
+        } else {
+          // Simple ref. Apply the same hash-prefix resolution used by /branch
+          // and /history so a truncated hash from /log expands to a full one.
+          const looksLikeHashPrefix = /^[0-9a-v]+$/i.test(ref) && ref.length < 32
+          if (looksLikeHashPrefix) {
+            const logRes = await sdk.client.session.log({ sessionID }, { throwOnError: true })
+            const entries = (logRes.data ?? []) as Array<{ commitHash: string; date: string; message: string }>
+            const lower = ref.toLowerCase()
+            const matches = entries.filter((e) => e.commitHash.toLowerCase().startsWith(lower))
+            if (matches.length === 1) {
+              ref = matches[0].commitHash
+            } else if (matches.length > 1) {
+              toast.show({
+                message: `Ambiguous ref "${ref}" — matches ${matches.length} commits`,
+                variant: "error",
+              })
+              return false
+            }
+            // 0 matches: pass through (could be a branch name in base32 chars).
+          }
+          await sdk.client.session.reset({ sessionID, ref }, { throwOnError: true })
+          sync.session.appendLocalSystem(sessionID, `Reset to ${ref}`, "/reset")
+        }
+      } catch (error) {
+        const msg =
+          (error as any)?.message ??
+          (error instanceof Error ? error.message : "Failed to reset")
+        toast.show({ message: msg, variant: "error" })
+        return false
+      }
+      // After a reset the on-disk state changed but the client cache hasn't —
+      // pull the new state into the TUI.
+      void sync.session.rebuild(sessionID).catch(() => {})
+      history.append({ ...store.prompt, mode: currentMode })
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
       return true
     } else if (inputText.startsWith("/new")) {
       const rest = inputText.slice("/new".length).trim()

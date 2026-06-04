@@ -93,11 +93,16 @@ export const SessionPaths = {
   unrevert: `${root}/:sessionID/unrevert`,
   commit: `${root}/:sessionID/commit`,
   newBranch: `${root}/:sessionID/new-branch`,
+  createBranchAt: `${root}/:sessionID/create-branch-at`,
+  branchFromPrompt: `${root}/:sessionID/branch-from-prompt`,
+  reset: `${root}/:sessionID/reset`,
+  resetToPrompt: `${root}/:sessionID/reset-to-prompt`,
   checkoutBranch: `${root}/:sessionID/checkout`,
   branches: `${root}/:sessionID/branches`,
   log: `${root}/:sessionID/log`,
   sql: `${root}/:sessionID/sql`,
   context: `${root}/:sessionID/context`,
+  history: `${root}/:sessionID/history`,
   diffStat: `${root}/:sessionID/diff-stat`,
   permissions: `${root}/:sessionID/permissions/:permissionID`,
   deleteMessage: `${root}/:sessionID/message/:messageID`,
@@ -398,6 +403,67 @@ export const SessionApi = HttpApi.make("session")
               "Switch the session onto a new branch forked from main. The session's branch field is updated and committed before the branch is created.",
           }),
         ),
+        HttpApiEndpoint.post("createBranchAt", SessionPaths.createBranchAt, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ branch: Schema.String, ref: Schema.String }),
+          success: described(Schema.Boolean, "Branch created at ref"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.createBranchAt",
+            summary: "Create a branch at a specific ref",
+            description:
+              "Creates a new branch pointing at the given ref (branch name, full commit hash, etc.) without switching the session onto it. Runs `CALL dolt_branch(<branch>, <ref>)`.",
+          }),
+        ),
+        HttpApiEndpoint.post("branchFromPrompt", SessionPaths.branchFromPrompt, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({
+            branch: Schema.String,
+            promptID: Schema.String,
+            nextPromptID: Schema.optional(Schema.String),
+            priorCommit: Schema.optional(Schema.String),
+            commitMessage: Schema.String,
+          }),
+          success: described(Schema.Boolean, "Branch created with synthetic commit"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.branchFromPrompt",
+            summary: "Create a branch capturing state-after-a-prompt",
+            description:
+              "Creates a new branch at `priorCommit` (or the project's base_branch when omitted) and applies the message/part rows added between that commit and `nextPromptID` (exclusive) on the session's current branch — producing a commit that captures the conversation state immediately after `promptID` was completed. The session's active branch is restored after the operation.",
+          }),
+        ),
+        HttpApiEndpoint.post("reset", SessionPaths.reset, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({ ref: Schema.String }),
+          success: described(Schema.Boolean, "Reset to ref"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reset",
+            summary: "Hard-reset the active branch to a ref",
+            description: "Runs `CALL dolt_reset('--hard', <ref>)`. Discards uncommitted changes and moves the active branch to `<ref>`.",
+          }),
+        ),
+        HttpApiEndpoint.post("resetToPrompt", SessionPaths.resetToPrompt, {
+          params: { sessionID: SessionID },
+          payload: Schema.Struct({
+            promptID: Schema.String,
+            nextPromptID: Schema.optional(Schema.String),
+            priorCommit: Schema.optional(Schema.String),
+          }),
+          success: described(Schema.Boolean, "Reset and re-applied diff"),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.resetToPrompt",
+            summary: "Reset and reapply prompt diff",
+            description:
+              "Hard-resets to `priorCommit` (or the project's base_branch when omitted) and re-INSERTs the message/part rows that exist between that commit and `nextPromptID` (exclusive). The result is the conversation state immediately after `promptID` was completed, sitting in the working set on the active branch.",
+          }),
+        ),
         HttpApiEndpoint.post("checkoutBranch", SessionPaths.checkoutBranch, {
           params: { sessionID: SessionID },
           payload: Schema.Struct({
@@ -419,9 +485,15 @@ export const SessionApi = HttpApi.make("session")
           success: described(
             Schema.Struct({
               current: Schema.NullOr(Schema.String),
-              branches: Schema.Array(Schema.String),
+              branches: Schema.Array(
+                Schema.Struct({
+                  name: Schema.String,
+                  commitHash: Schema.String,
+                  commitMessage: Schema.String,
+                }),
+              ),
             }),
-            "Branches forked from the project's base branch, with the session's current branch marked",
+            "Branches forked from the project's base branch, each with the head commit hash and message; the session's current branch is marked via `current`",
           ),
           error: ApiCommitError,
         }).annotateMerge(
@@ -514,6 +586,28 @@ export const SessionApi = HttpApi.make("session")
             summary: "Build LLM context",
             description:
               "Returns the message array that would be sent to the LLM on the next prompt, plus the resolved model.",
+          }),
+        ),
+        HttpApiEndpoint.get("history", SessionPaths.history, {
+          params: { sessionID: SessionID },
+          query: Schema.Struct({ as_of: Schema.optional(Schema.String) }),
+          success: described(
+            Schema.Array(
+              Schema.Struct({
+                id: MessageID,
+                time: Schema.Number,
+                text: Schema.String,
+              }),
+            ),
+            "User prompts in this session, oldest first",
+          ),
+          error: ApiCommitError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.history",
+            summary: "List user prompts",
+            description:
+              "Returns the user prompts that have been submitted in this session. When `as_of` is set, reads from that revision via Dolt AS OF.",
           }),
         ),
         HttpApiEndpoint.post("sql", SessionPaths.sql, {

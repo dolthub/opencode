@@ -68,6 +68,8 @@ export const Default = {
   CONTEXT: "context",
   DIFF_STAT: "diff-stat",
   DIFF_CONTEXT: "diff-context",
+  HISTORY: "history",
+  RESET: "reset",
 } as const
 
 export interface Interface {
@@ -128,12 +130,12 @@ export const layer = Layer.effect(
       }
       commands[Default.BRANCH] = {
         name: Default.BRANCH,
-        description: "list branches forked from this project's base branch",
+        description: "list branches; create at a ref (<name> <ref>) or at a prompt boundary (<name> [N] [-m msg])",
         source: "command",
         get template() {
           return ""
         },
-        hints: [],
+        hints: ["$ARGUMENTS"],
       }
       commands[Default.CHECKOUT] = {
         name: Default.CHECKOUT,
@@ -183,6 +185,24 @@ export const layer = Layer.effect(
       commands[Default.DIFF_CONTEXT] = {
         name: Default.DIFF_CONTEXT,
         description: "diff the LLM context between two refs (default HEAD..WORKING)",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.HISTORY] = {
+        name: Default.HISTORY,
+        description: "list user prompts in this session (or as of a ref)",
+        source: "command",
+        get template() {
+          return ""
+        },
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.RESET] = {
+        name: Default.RESET,
+        description: "hard-reset the active branch to a ref or to the state after prompt [N]",
         source: "command",
         get template() {
           return ""

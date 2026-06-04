@@ -21,11 +21,18 @@ export interface StorageAdapter {
   branchHash(branch: string): string | Promise<string>
   hasCommitInHistory(branch: string, commit: string): boolean | Promise<boolean>
   isDirty(): boolean | Promise<boolean>
-  listBranchesWithBase(baseBranch: string): string[] | Promise<string[]>
+  listBranchesWithBase(baseBranch: string): BranchInfo[] | Promise<BranchInfo[]>
   getCommitLog(): CommitLogEntry[] | Promise<CommitLogEntry[]>
   executeRaw(statement: string): RawResult | Promise<RawResult>
   diffStat(param1: string, param2: string): DiffStat[] | Promise<DiffStat[]>
   merge(branch: string, squash?: boolean): void | Promise<void>
+  reset(ref: string): void | Promise<void>
+}
+
+export interface BranchInfo {
+  name: string
+  commitHash: string
+  commitMessage: string
 }
 
 export type RawResult =

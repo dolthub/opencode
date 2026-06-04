@@ -218,5 +218,6 @@ export function init(filePath: string): StorageAdapter {
     },
     isDirty: () => { throw new Error("not implemented") },
     merge: () => { throw new Error("not implemented") },
+    reset: () => { throw new Error("not implemented") },
   }
 }

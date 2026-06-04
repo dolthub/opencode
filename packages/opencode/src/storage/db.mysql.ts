@@ -606,18 +606,20 @@ export function init(connectionString: string): StorageAdapter {
       return value
     },
     hasCommitInHistory,
-    listBranchesWithBase: async (baseBranch: string): Promise<string[]> => {
-      const [rows] = await mysqlDb.execute(sql`SELECT name, hash FROM dolt_branches`)
-      const branches = rows as Array<{ name: string; hash: string }>
+    listBranchesWithBase: async (baseBranch: string) => {
+      const [rows] = await mysqlDb.execute(
+        sql`SELECT name, hash, latest_commit_message FROM dolt_branches`,
+      )
+      const branches = rows as Array<{ name: string; hash: string; latest_commit_message: string }>
       const base = branches.find((b) => b.name === baseBranch)
       if (!base) {
         throw new Error(`Base branch "${baseBranch}" not found in dolt_branches`)
       }
-      const result: string[] = []
+      const result: Array<{ name: string; commitHash: string; commitMessage: string }> = []
       for (const b of branches) {
         if (b.name === baseBranch) continue
         if (await hasCommitInHistory(b.name, base.hash)) {
-          result.push(b.name)
+          result.push({ name: b.name, commitHash: b.hash, commitMessage: b.latest_commit_message })
         }
       }
       return result
@@ -771,6 +773,9 @@ export function init(connectionString: string): StorageAdapter {
       } else {
         await mysqlDb.execute(sql`CALL dolt_merge(${branch})`)
       }
+    },
+    reset: async (ref: string): Promise<void> => {
+      await mysqlDb.execute(sql`CALL dolt_reset('--hard', ${ref})`)
     },
   }
 }

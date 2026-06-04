@@ -19,9 +19,9 @@ import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
 import * as Database from "@/storage/db"
-import { SessionTable } from "@/session/session.sql"
+import { MessageTable, PartTable, SessionTable } from "@/session/session.sql"
 import { ProjectTable } from "@/project/project.sql"
-import { eq } from "drizzle-orm"
+import { and, eq, gt, lt } from "drizzle-orm"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { commitError } from "../errors"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -454,6 +454,68 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
     })
 
+    const history = Effect.fn("SessionHttpApi.history")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: { as_of?: string }
+    }) {
+      const sessionID = ctx.params.sessionID
+      // BASE shorthand: same resolution rule used by /context and /diff-stat.
+      const rawAsOf = ctx.query.as_of
+      const asOf = rawAsOf && rawAsOf.toUpperCase() === "BASE"
+        ? yield* Effect.promise(() =>
+            Database.useAsync(async (db) => {
+              const sessionRow = (await db
+                .select({ project_id: SessionTable.project_id })
+                .from(SessionTable)
+                .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+              const projectID = sessionRow[0]?.project_id
+              if (!projectID) return undefined
+              const projectRow = (await db
+                .select({ base_branch: ProjectTable.base_branch })
+                .from(ProjectTable)
+                .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+              return projectRow[0]?.base_branch ?? undefined
+            }),
+          ).pipe(
+            Effect.flatMap((b) =>
+              b
+                ? Effect.succeed(b)
+                : Effect.fail(commitError(`BASE used but project has no base_branch configured for session "${sessionID}"`)),
+            ),
+          )
+        : rawAsOf
+      return yield* Effect.gen(function* () {
+        const items: MessageV2.WithParts[] = []
+        yield* Effect.promise(async () => {
+          for await (const item of MessageV2.stream(sessionID, asOf)) {
+            items.push(item)
+          }
+        })
+        // stream yields newest-first; reverse so callers see oldest first
+        // (matches the natural reading order of a conversation history).
+        items.reverse()
+        return items
+          .filter((m): m is MessageV2.WithParts & { info: MessageV2.User } => m.info.role === "user")
+          .map((m) => ({
+            id: m.info.id,
+            time: m.info.time.created,
+            // Concatenate non-ignored text parts. Subtask/file parts have no
+            // textual prompt, and synthetic parts (e.g. tool-result media
+            // injections) shouldn't show up as user-authored prompts either.
+            text: m.parts
+              .filter((p): p is MessageV2.TextPart => p.type === "text" && !p.ignored && !p.synthetic)
+              .map((p) => p.text)
+              .join("\n"),
+          }))
+      }).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const msg = err instanceof Error ? err.message : String(err)
+          return Effect.fail(commitError(`/history failed: ${msg}`))
+        }),
+      )
+    })
+
     const sql = Effect.fn("SessionHttpApi.sql")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: { statement: string }
@@ -620,6 +682,265 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const createBranchAt = Effect.fn("SessionHttpApi.createBranchAt")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { branch: string; ref: string }
+    }) {
+      const branch = ctx.payload.branch.trim()
+      const ref = ctx.payload.ref.trim()
+      if (!branch) {
+        return yield* Effect.fail(commitError("Branch name must be a non-empty string"))
+      }
+      if (!ref) {
+        return yield* Effect.fail(commitError("Ref must be a non-empty string"))
+      }
+      const exists = yield* Effect.promise(() => Database.hasBranch(branch))
+      if (exists) {
+        return yield* Effect.fail(commitError(`A branch named "${branch}" already exists`))
+      }
+      yield* Effect.promise(() => Database.createBranch(branch, ref, false)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return true
+    })
+
+    const branchFromPrompt = Effect.fn("SessionHttpApi.branchFromPrompt")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: {
+        branch: string
+        promptID: string
+        nextPromptID?: string
+        priorCommit?: string
+        commitMessage: string
+      }
+    }) {
+      const sessionID = ctx.params.sessionID
+      const branch = ctx.payload.branch.trim()
+      const promptID = ctx.payload.promptID.trim()
+      const nextPromptID = ctx.payload.nextPromptID?.trim() || undefined
+      const commitMessage = ctx.payload.commitMessage.trim()
+      if (!branch) return yield* Effect.fail(commitError("Branch name required"))
+      if (!promptID) return yield* Effect.fail(commitError("promptID required"))
+      if (!commitMessage) return yield* Effect.fail(commitError("Commit message required"))
+      const exists = yield* Effect.promise(() => Database.hasBranch(branch))
+      if (exists) return yield* Effect.fail(commitError(`A branch named "${branch}" already exists`))
+      // Resolve priorCommit. Missing → use the project's base_branch so the
+      // operation still has a fork point when no commit on the session branch
+      // yet covers any prompts.
+      let priorCommit = ctx.payload.priorCommit?.trim() || undefined
+      if (!priorCommit) {
+        const baseBranch = yield* Effect.promise(() =>
+          Database.useAsync(async (db) => {
+            const sessionRow = (await db
+              .select({ project_id: SessionTable.project_id })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+            const projectID = sessionRow[0]?.project_id
+            if (!projectID) return undefined
+            const projectRow = (await db
+              .select({ base_branch: ProjectTable.base_branch })
+              .from(ProjectTable)
+              .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+            return projectRow[0]?.base_branch ?? undefined
+          }),
+        )
+        if (!baseBranch) {
+          return yield* Effect.fail(
+            commitError(`priorCommit not supplied and project has no base_branch for session "${sessionID}"`),
+          )
+        }
+        priorCommit = baseBranch
+      }
+      const originalBranch = yield* Effect.promise(() => Database.currentBranch())
+      // Max message id present at priorCommit. New rows on the session branch
+      // are exactly those with id > this floor.
+      const maxResult = yield* Effect.promise(() =>
+        Database.executeRaw(
+          `SELECT IFNULL(MAX(id), '') AS max_id FROM \`message\` AS OF '${priorCommit.replace(/'/g, "''")}'`,
+        ),
+      )
+      const maxIdAtPrior = maxResult.kind === "rows" ? String(maxResult.rows[0]?.max_id ?? "") : ""
+      const messageWhere = nextPromptID
+        ? and(gt(MessageTable.id, maxIdAtPrior as never), lt(MessageTable.id, nextPromptID as never))
+        : gt(MessageTable.id, maxIdAtPrior as never)
+      const partWhere = nextPromptID
+        ? and(gt(PartTable.message_id, maxIdAtPrior as never), lt(PartTable.message_id, nextPromptID as never))
+        : gt(PartTable.message_id, maxIdAtPrior as never)
+      const messageRows = yield* Effect.promise(() =>
+        Database.useAsync((db) =>
+          db.select().from(MessageTable).where(messageWhere).orderBy(MessageTable.id).all(),
+        ),
+      )
+      const partRows = yield* Effect.promise(() =>
+        Database.useAsync((db) =>
+          db.select().from(PartTable).where(partWhere).orderBy(PartTable.id).all(),
+        ),
+      )
+      // Fast path: nothing to insert. Just create the branch at priorCommit —
+      // there's no diff to commit. The TUI normally takes the createBranchAt
+      // path in this case, but be defensive.
+      if (messageRows.length === 0 && partRows.length === 0) {
+        yield* Effect.promise(() => Database.createBranch(branch, priorCommit!, false)).pipe(
+          Effect.catchCause((cause) => {
+            const err = Cause.squash(cause)
+            const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+            const msg =
+              (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+              (inner instanceof Error ? inner.message : undefined) ??
+              (err instanceof Error ? err.message : String(err))
+            return Effect.fail(commitError(msg))
+          }),
+        )
+        return true
+      }
+      // Slow path: branch + checkout + insert + commit, restoring the original
+      // branch in all cases (Effect.ensuring runs on success and failure).
+      yield* Effect.gen(function* () {
+        yield* Effect.promise(() => Database.createBranch(branch, priorCommit!, false))
+        yield* Effect.promise(() => Database.changeBranch(branch))
+        if (messageRows.length > 0) {
+          yield* Effect.promise(() =>
+            Database.useAsync((db) => db.insert(MessageTable).values(messageRows)),
+          )
+        }
+        if (partRows.length > 0) {
+          yield* Effect.promise(() =>
+            Database.useAsync((db) => db.insert(PartTable).values(partRows)),
+          )
+        }
+        yield* Database.commit(commitMessage)
+      }).pipe(
+        Effect.ensuring(
+          Effect.promise(() => Database.changeBranch(originalBranch)).pipe(
+            Effect.catchCause(() => Effect.void),
+          ),
+        ),
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return true
+    })
+
+    const reset = Effect.fn("SessionHttpApi.reset")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { ref: string }
+    }) {
+      const ref = ctx.payload.ref.trim()
+      if (!ref) return yield* Effect.fail(commitError("Ref required"))
+      yield* Effect.promise(() => Database.reset(ref)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      return true
+    })
+
+    const resetToPrompt = Effect.fn("SessionHttpApi.resetToPrompt")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: { promptID: string; nextPromptID?: string; priorCommit?: string }
+    }) {
+      const sessionID = ctx.params.sessionID
+      const promptID = ctx.payload.promptID.trim()
+      const nextPromptID = ctx.payload.nextPromptID?.trim() || undefined
+      if (!promptID) return yield* Effect.fail(commitError("promptID required"))
+      // Resolve priorCommit. Missing → project's base_branch (same fallback as
+      // branchFromPrompt) so the operation still has a fork point when no
+      // commit on the session branch covers any prompts yet.
+      let priorCommit = ctx.payload.priorCommit?.trim() || undefined
+      if (!priorCommit) {
+        const baseBranch = yield* Effect.promise(() =>
+          Database.useAsync(async (db) => {
+            const sessionRow = (await db
+              .select({ project_id: SessionTable.project_id })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, sessionID))) as Array<{ project_id: string }>
+            const projectID = sessionRow[0]?.project_id
+            if (!projectID) return undefined
+            const projectRow = (await db
+              .select({ base_branch: ProjectTable.base_branch })
+              .from(ProjectTable)
+              .where(eq(ProjectTable.id, projectID as never))) as Array<{ base_branch: string | null }>
+            return projectRow[0]?.base_branch ?? undefined
+          }),
+        )
+        if (!baseBranch) {
+          return yield* Effect.fail(
+            commitError(`priorCommit not supplied and project has no base_branch for session "${sessionID}"`),
+          )
+        }
+        priorCommit = baseBranch
+      }
+      // Floor: max message id at priorCommit. Anything > this floor in the
+      // current state needs to be re-applied after the reset.
+      const maxResult = yield* Effect.promise(() =>
+        Database.executeRaw(
+          `SELECT IFNULL(MAX(id), '') AS max_id FROM \`message\` AS OF '${priorCommit.replace(/'/g, "''")}'`,
+        ),
+      )
+      const maxIdAtPrior = maxResult.kind === "rows" ? String(maxResult.rows[0]?.max_id ?? "") : ""
+      const messageWhere = nextPromptID
+        ? and(gt(MessageTable.id, maxIdAtPrior as never), lt(MessageTable.id, nextPromptID as never))
+        : gt(MessageTable.id, maxIdAtPrior as never)
+      const partWhere = nextPromptID
+        ? and(gt(PartTable.message_id, maxIdAtPrior as never), lt(PartTable.message_id, nextPromptID as never))
+        : gt(PartTable.message_id, maxIdAtPrior as never)
+      // Read rows from the CURRENT state before the reset — the reset will
+      // wipe the working set, so cache the diff in memory first.
+      const messageRows = yield* Effect.promise(() =>
+        Database.useAsync((db) =>
+          db.select().from(MessageTable).where(messageWhere).orderBy(MessageTable.id).all(),
+        ),
+      )
+      const partRows = yield* Effect.promise(() =>
+        Database.useAsync((db) =>
+          db.select().from(PartTable).where(partWhere).orderBy(PartTable.id).all(),
+        ),
+      )
+      yield* Effect.promise(() => Database.reset(priorCommit!)).pipe(
+        Effect.catchCause((cause) => {
+          const err = Cause.squash(cause)
+          const inner = err instanceof Error ? ((err as any).cause ?? err) : err
+          const msg =
+            (inner instanceof Error ? (inner as any).sqlMessage : undefined) ??
+            (inner instanceof Error ? inner.message : undefined) ??
+            (err instanceof Error ? err.message : String(err))
+          return Effect.fail(commitError(msg))
+        }),
+      )
+      if (messageRows.length > 0) {
+        yield* Effect.promise(() =>
+          Database.useAsync((db) => db.insert(MessageTable).values(messageRows)),
+        )
+      }
+      if (partRows.length > 0) {
+        yield* Effect.promise(() =>
+          Database.useAsync((db) => db.insert(PartTable).values(partRows)),
+        )
+      }
+      return true
+    })
+
     const newBranch = Effect.fn("SessionHttpApi.newBranch")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: { branch: string }
@@ -742,11 +1063,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("unrevert", unrevert)
       .handle("commit", commit)
       .handle("newBranch", newBranch)
+      .handle("createBranchAt", createBranchAt)
+      .handle("branchFromPrompt", branchFromPrompt)
+      .handle("reset", reset)
+      .handle("resetToPrompt", resetToPrompt)
       .handle("checkoutBranch", checkoutBranch)
       .handle("branches", branches)
       .handle("log", log)
       .handle("sql", sql)
       .handle("context", context)
+      .handle("history", history)
       .handle("diffStat", diffStat)
       .handle("permissionRespond", permissionRespond)
       .handle("deleteMessage", deleteMessage)

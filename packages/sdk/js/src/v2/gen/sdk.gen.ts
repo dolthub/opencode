@@ -3433,6 +3433,156 @@ export class Session2 extends HeyApiClient {
     })
   }
 
+  public createBranchAt<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      branch: string
+      ref: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "branch" },
+            { in: "body", key: "ref" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<boolean, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/create-branch-at",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public reset<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      ref: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "ref" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<boolean, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/reset",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public resetToPrompt<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      promptID: string
+      nextPromptID?: string
+      priorCommit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "promptID" },
+            { in: "body", key: "nextPromptID" },
+            { in: "body", key: "priorCommit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<boolean, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/reset-to-prompt",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public branchFromPrompt<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      branch: string
+      promptID: string
+      nextPromptID?: string
+      priorCommit?: string
+      commitMessage: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "branch" },
+            { in: "body", key: "promptID" },
+            { in: "body", key: "nextPromptID" },
+            { in: "body", key: "priorCommit" },
+            { in: "body", key: "commitMessage" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<boolean, unknown, ThrowOnError>({
+      url: "/session/{sessionID}/branch-from-prompt",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
   public checkoutBranch<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
@@ -3564,6 +3714,39 @@ export class Session2 extends HeyApiClient {
     })
   }
 
+  public history<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      as_of?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "as_of" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      Array<{ id: string; time: number; text: string }>,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/history",
+      ...options,
+      ...params,
+    })
+  }
+
   public sql<ThrowOnError extends boolean = false>(
     parameters: {
       sessionID: string
@@ -3654,7 +3837,14 @@ export class Session2 extends HeyApiClient {
         },
       ],
     )
-    return (options?.client ?? this.client).get<{ current: string | null; branches: string[] }, unknown, ThrowOnError>({
+    return (options?.client ?? this.client).get<
+      {
+        current: string | null
+        branches: Array<{ name: string; commitHash: string; commitMessage: string }>
+      },
+      unknown,
+      ThrowOnError
+    >({
       url: "/session/{sessionID}/branches",
       ...options,
       ...params,
