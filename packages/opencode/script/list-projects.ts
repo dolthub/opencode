@@ -89,7 +89,7 @@ if (values.sqlite) {
   console.log(`Opening with bun:sqlite: ${filePath}\n`)
   const db = new Database(filePath, { readonly: true })
   try {
-    run(db)
+    run(db as any)
   } finally {
     db.close()
   }

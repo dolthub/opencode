@@ -11,6 +11,9 @@ export const SessionID = Schema.String.annotate({ [ZodOverride]: z.string().ends
   Schema.brand("SessionID"),
   withStatics((s) => ({
     forProject: (projectId: string) => s.make(`${projectId}${SESSION_SUFFIX}`),
+    // Test-only: tests pre-date `forProject` and synthesize unique session
+    // ids via `descending(slug)`. Production code uses `forProject`.
+    descending: (id?: string) => s.make(Identifier.descending("session", id)),
     zod: zod(s),
   })),
 )

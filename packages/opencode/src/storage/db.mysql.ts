@@ -546,7 +546,7 @@ export function init(connectionString: string): StorageAdapter {
     const [rows] = await mysqlDb.execute(
       sql`SELECT count(*) FROM dolt_log AS OF ${branch} WHERE commit_hash = ${commit}`,
     )
-    const row = (rows as Record<string, unknown>[])[0]
+    const row = (rows as unknown as Record<string, unknown>[])[0]
     return Number(Object.values(row)[0]) > 0
   }
 
@@ -568,7 +568,7 @@ export function init(connectionString: string): StorageAdapter {
     close: () => pool.end(),
     currentBranch: async (): Promise<string> => {
       const [rows] = await mysqlDb.execute(sql`SELECT active_branch()`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       return Object.values(row)[0] as string
     },
     changeBranch: async (name: string): Promise<void> => {
@@ -593,12 +593,12 @@ export function init(connectionString: string): StorageAdapter {
     },
     hasBranch: async (name: string): Promise<boolean> => {
       const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
     },
     branchHash: async (branch: string): Promise<string> => {
       const [rows] = await mysqlDb.execute(sql`SELECT hashof(${branch})`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       const value = row ? Object.values(row)[0] : undefined
       if (typeof value !== "string" || value.length === 0) {
         throw new Error(`Could not resolve hash for branch "${branch}"`)
@@ -610,7 +610,7 @@ export function init(connectionString: string): StorageAdapter {
       const [rows] = await mysqlDb.execute(
         sql`SELECT name, hash, latest_commit_message FROM dolt_branches`,
       )
-      const branches = rows as Array<{ name: string; hash: string; latest_commit_message: string }>
+      const branches = rows as unknown as Array<{ name: string; hash: string; latest_commit_message: string }>
       const base = branches.find((b) => b.name === baseBranch)
       if (!base) {
         throw new Error(`Base branch "${baseBranch}" not found in dolt_branches`)
@@ -655,7 +655,7 @@ export function init(connectionString: string): StorageAdapter {
           const [rows] = await mysqlDb.execute(
             sql`SELECT * FROM DOLT_DIFF_STAT(${param1}, ${param2}, ${table})`,
           )
-          const arr = rows as Array<Record<string, unknown>>
+          const arr = rows as unknown as Array<Record<string, unknown>>
           if (arr.length === 0) continue
           // Compute byte-size aggregates for the `data` column from DOLT_DIFF
           // for tables that have one. Conditional sums let us cover all four
@@ -681,7 +681,7 @@ export function init(connectionString: string): StorageAdapter {
                 FROM DOLT_DIFF(${param1}, ${param2}, ${table})
               `,
             )
-            const aggRow = (aggRows as Array<Record<string, unknown>>)[0] ?? {}
+            const aggRow = (aggRows as unknown as Array<Record<string, unknown>>)[0] ?? {}
             dataAgg = {
               oldDataBytes: Number(aggRow.old_bytes ?? 0),
               newDataBytes: Number(aggRow.new_bytes ?? 0),
@@ -742,7 +742,7 @@ export function init(connectionString: string): StorageAdapter {
       const [rows] = await mysqlDb.execute(
         sql`SELECT commit_hash, date, message FROM dolt_log ORDER BY commit_order desc`,
       )
-      return (rows as Array<{ commit_hash: string; date: Date; message: string }>).map((row) => ({
+      return (rows as unknown as Array<{ commit_hash: string; date: Date; message: string }>).map((row) => ({
         commitHash: row.commit_hash,
         date: row.date,
         message: row.message,
@@ -764,7 +764,7 @@ export function init(connectionString: string): StorageAdapter {
     },
     isDirty: async (): Promise<boolean> => {
       const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_diff WHERE commit_hash = 'WORKING'`)
-      const row = (rows as Record<string, unknown>[])[0]
+      const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) !== 0
     },
     merge: async (branch: string, squash: boolean = false): Promise<void> => {

@@ -1276,7 +1276,11 @@ unix(
             yield* Effect.promise(async () => {
               const start = Date.now()
               while (Date.now() - start < 5000) {
-                const msgs = await MessageV2.filterCompacted(MessageV2.stream(chat.id))
+                const items: MessageV2.WithParts[] = []
+                for await (const item of MessageV2.stream(chat.id)) {
+                  items.push(item)
+                }
+                const msgs = MessageV2.filterCompacted(items)
                 const taskMsg = msgs.find((item) => item.info.role === "assistant")
                 const tool = taskMsg ? toolPart(taskMsg.parts) : undefined
                 if (tool?.state.status === "running" && tool.state.metadata?.output.includes("first")) return
@@ -1763,10 +1767,12 @@ it.live("keeps stored part order stable when file resolution is async", () =>
 
         if (msg.info.role !== "user") throw new Error("expected user message")
 
-        const stored = MessageV2.get({
-          sessionID: session.id,
-          messageID: msg.info.id,
-        })
+        const stored = yield* Effect.promise(() =>
+          MessageV2.get({
+            sessionID: session.id,
+            messageID: msg.info.id,
+          }),
+        )
         const text = stored.parts.filter((part) => part.type === "text").map((part) => part.text)
 
         expect(text[0]?.startsWith("Called the Read tool with the following input:")).toBe(true)
@@ -1805,7 +1811,9 @@ it.live("handles filenames with # character", () =>
           parts,
           noReply: true,
         })
-        const stored = MessageV2.get({ sessionID: session.id, messageID: message.info.id })
+        const stored = yield* Effect.promise(() =>
+          MessageV2.get({ sessionID: session.id, messageID: message.info.id }),
+        )
         const textParts = stored.parts.filter((part) => part.type === "text")
         const hasContent = textParts.some((part) => part.text.includes("special content"))
         expect(hasContent).toBe(true)

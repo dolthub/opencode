@@ -222,7 +222,6 @@ if (values.doltlite) {
   const actualPath = filePath.endsWith(".doltlite.db") ? filePath : doltlitePath(filePath)
   console.log(`Opening with DoltLite adapter: ${actualPath}`)
 
-  const { default: DoltliteDBModule } = await import("../src/storage/db.doltlite.ts")
   // Use init() with the actual path directly by temporarily bypassing the path transform
   const sqlite = new DatabaseSync(actualPath)
 

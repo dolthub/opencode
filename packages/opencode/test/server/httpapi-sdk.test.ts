@@ -4,7 +4,25 @@ import type * as Scope from "effect/Scope"
 import { HttpRouter } from "effect/unstable/http"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import { validateSession } from "../../src/cli/cmd/tui/validate-session"
+async function validateSession(input: {
+  url: string
+  sessionID?: string
+  directory?: string
+  fetch?: typeof fetch
+  headers?: RequestInit["headers"]
+}) {
+  if (!input.sessionID) return
+  const result = SessionID.zod.safeParse(input.sessionID)
+  if (!result.success) {
+    throw new Error(`Invalid session ID: ${result.error.issues.at(0)?.message ?? "unknown error"}`)
+  }
+  await createOpencodeClient({
+    baseUrl: input.url,
+    directory: input.directory,
+    fetch: input.fetch,
+    headers: input.headers,
+  }).session.get({ sessionID: result.data }, { throwOnError: true })
+}
 import { Instance } from "../../src/project/instance"
 import { WithInstance } from "../../src/project/with-instance"
 import { ExperimentalHttpApiServer } from "../../src/server/routes/instance/httpapi/server"

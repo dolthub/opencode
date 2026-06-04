@@ -82,7 +82,7 @@ if (values.sqlite) {
   const db = new Database(filePath, { create: true })
   db.run("PRAGMA foreign_keys = ON")
   try {
-    run(db)
+    run(db as any)
   } finally {
     db.close()
   }

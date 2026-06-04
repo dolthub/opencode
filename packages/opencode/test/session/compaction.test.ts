@@ -1217,7 +1217,7 @@ describe("session.compaction.process", () => {
           expect(captured).toContain("zzzz")
           expect(captured).not.toContain("keep tail")
 
-          const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const filtered = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
           expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
           expect(filtered[1]?.info.role).toBe("assistant")
           expect(filtered[1]?.info.role === "assistant" ? filtered[1].info.summary : false).toBe(true)
@@ -1689,7 +1689,7 @@ describe("session.compaction.process", () => {
             auto: false,
           })
 
-          msgs = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          msgs = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
           parent = msgs.at(-1)?.info.id
           expect(parent).toBeTruthy()
           await rt.runPromise(
@@ -1758,7 +1758,7 @@ describe("session.compaction.process", () => {
             auto: false,
           })
 
-          msgs = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          msgs = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
           parent = msgs.at(-1)?.info.id
           expect(parent).toBeTruthy()
           await rt.runPromise(
@@ -1772,7 +1772,7 @@ describe("session.compaction.process", () => {
             ),
           )
 
-          const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+          const filtered = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
           const ids = filtered.map((msg) => msg.info.id)
 
           expect(ids).not.toContain(u1.id)

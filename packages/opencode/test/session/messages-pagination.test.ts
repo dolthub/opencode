@@ -130,7 +130,7 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         await fill(session.id, 2)
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 10 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 10 })
         expect(result).toBeDefined()
         expect(result.items).toBeArray()
 
@@ -146,18 +146,18 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 6)
 
-        const a = MessageV2.page({ sessionID: session.id, limit: 2 })
+        const a = await MessageV2.page({ sessionID: session.id, limit: 2 })
         expect(a.items.map((item) => item.info.id)).toEqual(ids.slice(-2))
         expect(a.items.every((item) => item.parts.length === 1)).toBe(true)
         expect(a.more).toBe(true)
         expect(a.cursor).toBeTruthy()
 
-        const b = MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
+        const b = await MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
         expect(b.items.map((item) => item.info.id)).toEqual(ids.slice(-4, -2))
         expect(b.more).toBe(true)
         expect(b.cursor).toBeTruthy()
 
-        const c = MessageV2.page({ sessionID: session.id, limit: 2, before: b.cursor! })
+        const c = await MessageV2.page({ sessionID: session.id, limit: 2, before: b.cursor! })
         expect(c.items.map((item) => item.info.id)).toEqual(ids.slice(0, 2))
         expect(c.more).toBe(false)
         expect(c.cursor).toBeUndefined()
@@ -174,7 +174,7 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 4)
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 4 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 4 })
         expect(result.items.map((item) => item.info.id)).toEqual(ids)
 
         await svc.remove(session.id)
@@ -188,7 +188,7 @@ describe("MessageV2.page", () => {
       fn: async () => {
         const session = await svc.create({})
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 10 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 10 })
         expect(result.items).toEqual([])
         expect(result.more).toBe(false)
         expect(result.cursor).toBeUndefined()
@@ -203,7 +203,7 @@ describe("MessageV2.page", () => {
       directory: root,
       fn: async () => {
         const fake = "non-existent-session" as SessionID
-        expect(() => MessageV2.page({ sessionID: fake, limit: 10 })).toThrow("NotFoundError")
+        await expect(MessageV2.page({ sessionID: fake, limit: 10 })).rejects.toThrow("NotFoundError")
       },
     })
   })
@@ -215,7 +215,7 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 3)
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 3 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 3 })
         expect(result.items.map((item) => item.info.id)).toEqual(ids)
         expect(result.more).toBe(false)
         expect(result.cursor).toBeUndefined()
@@ -232,7 +232,7 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 5)
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 1 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 1 })
         expect(result.items).toHaveLength(1)
         expect(result.items[0].info.id).toBe(ids[ids.length - 1])
         expect(result.more).toBe(true)
@@ -257,7 +257,7 @@ describe("MessageV2.page", () => {
           text: "extra",
         })
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 10 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 10 })
         expect(result.items).toHaveLength(1)
         expect(result.items[0].parts).toHaveLength(2)
 
@@ -273,8 +273,8 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 4, (i) => 1000.5 + i)
 
-        const a = MessageV2.page({ sessionID: session.id, limit: 2 })
-        const b = MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
+        const a = await MessageV2.page({ sessionID: session.id, limit: 2 })
+        const b = await MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
 
         expect(a.items.map((item) => item.info.id)).toEqual(ids.slice(-2))
         expect(b.items.map((item) => item.info.id)).toEqual(ids.slice(0, 2))
@@ -291,11 +291,11 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 4, () => 1000)
 
-        const a = MessageV2.page({ sessionID: session.id, limit: 2 })
+        const a = await MessageV2.page({ sessionID: session.id, limit: 2 })
         expect(a.items.map((item) => item.info.id)).toEqual(ids.slice(-2))
         expect(a.more).toBe(true)
 
-        const b = MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
+        const b = await MessageV2.page({ sessionID: session.id, limit: 2, before: a.cursor! })
         expect(b.items.map((item) => item.info.id)).toEqual(ids.slice(0, 2))
         expect(b.more).toBe(false)
 
@@ -313,8 +313,8 @@ describe("MessageV2.page", () => {
         await fill(a.id, 3)
         await fill(b.id, 2)
 
-        const resultA = MessageV2.page({ sessionID: a.id, limit: 10 })
-        const resultB = MessageV2.page({ sessionID: b.id, limit: 10 })
+        const resultA = await MessageV2.page({ sessionID: a.id, limit: 10 })
+        const resultB = await MessageV2.page({ sessionID: b.id, limit: 10 })
         expect(resultA.items).toHaveLength(3)
         expect(resultB.items).toHaveLength(2)
         expect(resultA.items.every((item) => item.info.sessionID === a.id)).toBe(true)
@@ -333,7 +333,7 @@ describe("MessageV2.page", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 10)
 
-        const result = MessageV2.page({ sessionID: session.id, limit: 100 })
+        const result = await MessageV2.page({ sessionID: session.id, limit: 100 })
         expect(result.items).toHaveLength(10)
         expect(result.items.map((item) => item.info.id)).toEqual(ids)
         expect(result.more).toBe(false)
@@ -353,7 +353,7 @@ describe("MessageV2.stream", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 5)
 
-        const items = Array.from(MessageV2.stream(session.id))
+        const items = await Array.fromAsync(MessageV2.stream(session.id))
         expect(items.map((item) => item.info.id)).toEqual(ids.slice().reverse())
 
         await svc.remove(session.id)
@@ -367,7 +367,7 @@ describe("MessageV2.stream", () => {
       fn: async () => {
         const session = await svc.create({})
 
-        const items = Array.from(MessageV2.stream(session.id))
+        const items = await Array.fromAsync(MessageV2.stream(session.id))
         expect(items).toHaveLength(0)
 
         await svc.remove(session.id)
@@ -382,7 +382,7 @@ describe("MessageV2.stream", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 1)
 
-        const items = Array.from(MessageV2.stream(session.id))
+        const items = await Array.fromAsync(MessageV2.stream(session.id))
         expect(items).toHaveLength(1)
         expect(items[0].info.id).toBe(ids[0])
 
@@ -398,7 +398,7 @@ describe("MessageV2.stream", () => {
         const session = await svc.create({})
         await fill(session.id, 3)
 
-        const items = Array.from(MessageV2.stream(session.id))
+        const items = await Array.fromAsync(MessageV2.stream(session.id))
         for (const item of items) {
           expect(item.parts).toHaveLength(1)
           expect(item.parts[0].type).toBe("text")
@@ -416,7 +416,7 @@ describe("MessageV2.stream", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 60)
 
-        const items = Array.from(MessageV2.stream(session.id))
+        const items = await Array.fromAsync(MessageV2.stream(session.id))
         expect(items).toHaveLength(60)
         expect(items[0].info.id).toBe(ids[ids.length - 1])
         expect(items[59].info.id).toBe(ids[0])
@@ -426,7 +426,7 @@ describe("MessageV2.stream", () => {
     })
   })
 
-  test("is a sync generator", async () => {
+  test("is an async generator", async () => {
     await WithInstance.provide({
       directory: root,
       fn: async () => {
@@ -434,8 +434,7 @@ describe("MessageV2.stream", () => {
         await fill(session.id, 1)
 
         const gen = MessageV2.stream(session.id)
-        const first = gen.next()
-        // sync generator returns { value, done } directly, not a Promise
+        const first = await gen.next()
         expect(first).toHaveProperty("value")
         expect(first).toHaveProperty("done")
         expect(first.done).toBe(false)
@@ -454,7 +453,7 @@ describe("MessageV2.parts", () => {
         const session = await svc.create({})
         const [id] = await fill(session.id, 1)
 
-        const result = MessageV2.parts(id)
+        const result = await MessageV2.parts(id)
         expect(result).toHaveLength(1)
         expect(result[0].type).toBe("text")
         expect((result[0] as MessageV2.TextPart).text).toBe("m0")
@@ -471,7 +470,7 @@ describe("MessageV2.parts", () => {
         const session = await svc.create({})
         const id = await addUser(session.id)
 
-        const result = MessageV2.parts(id)
+        const result = await MessageV2.parts(id)
         expect(result).toEqual([])
 
         await svc.remove(session.id)
@@ -501,7 +500,7 @@ describe("MessageV2.parts", () => {
           text: "third",
         })
 
-        const result = MessageV2.parts(id)
+        const result = await MessageV2.parts(id)
         expect(result).toHaveLength(3)
         expect((result[0] as MessageV2.TextPart).text).toBe("m0")
         expect((result[1] as MessageV2.TextPart).text).toBe("second")
@@ -517,7 +516,7 @@ describe("MessageV2.parts", () => {
       directory: root,
       fn: async () => {
         await svc.create({})
-        const result = MessageV2.parts(MessageID.ascending())
+        const result = await MessageV2.parts(MessageID.ascending())
         expect(result).toEqual([])
       },
     })
@@ -530,7 +529,7 @@ describe("MessageV2.parts", () => {
         const session = await svc.create({})
         const [id] = await fill(session.id, 1)
 
-        const result = MessageV2.parts(id)
+        const result = await MessageV2.parts(id)
         expect(result[0].sessionID).toBe(session.id)
         expect(result[0].messageID).toBe(id)
 
@@ -548,7 +547,7 @@ describe("MessageV2.get", () => {
         const session = await svc.create({})
         const [id] = await fill(session.id, 1)
 
-        const result = MessageV2.get({ sessionID: session.id, messageID: id })
+        const result = await MessageV2.get({ sessionID: session.id, messageID: id })
         expect(result.info.id).toBe(id)
         expect(result.info.sessionID).toBe(session.id)
         expect(result.info.role).toBe("user")
@@ -566,7 +565,7 @@ describe("MessageV2.get", () => {
       fn: async () => {
         const session = await svc.create({})
 
-        expect(() => MessageV2.get({ sessionID: session.id, messageID: MessageID.ascending() })).toThrow(
+        await expect(MessageV2.get({ sessionID: session.id, messageID: MessageID.ascending() })).rejects.toThrow(
           "NotFoundError",
         )
 
@@ -583,8 +582,8 @@ describe("MessageV2.get", () => {
         const b = await svc.create({})
         const [id] = await fill(a.id, 1)
 
-        expect(() => MessageV2.get({ sessionID: b.id, messageID: id })).toThrow("NotFoundError")
-        const result = MessageV2.get({ sessionID: a.id, messageID: id })
+        await expect(MessageV2.get({ sessionID: b.id, messageID: id })).rejects.toThrow("NotFoundError")
+        const result = await MessageV2.get({ sessionID: a.id, messageID: id })
         expect(result.info.id).toBe(id)
 
         await svc.remove(a.id)
@@ -608,7 +607,7 @@ describe("MessageV2.get", () => {
           text: "extra",
         })
 
-        const result = MessageV2.get({ sessionID: session.id, messageID: id })
+        const result = await MessageV2.get({ sessionID: session.id, messageID: id })
         expect(result.parts).toHaveLength(2)
 
         await svc.remove(session.id)
@@ -632,7 +631,7 @@ describe("MessageV2.get", () => {
           text: "response",
         })
 
-        const result = MessageV2.get({ sessionID: session.id, messageID: aid })
+        const result = await MessageV2.get({ sessionID: session.id, messageID: aid })
         expect(result.info.role).toBe("assistant")
         expect(result.parts).toHaveLength(1)
         expect((result.parts[0] as MessageV2.TextPart).text).toBe("response")
@@ -649,7 +648,7 @@ describe("MessageV2.get", () => {
         const session = await svc.create({})
         const id = await addUser(session.id)
 
-        const result = MessageV2.get({ sessionID: session.id, messageID: id })
+        const result = await MessageV2.get({ sessionID: session.id, messageID: id })
         expect(result.info.id).toBe(id)
         expect(result.parts).toEqual([])
 
@@ -667,7 +666,7 @@ describe("MessageV2.filterCompacted", () => {
         const session = await svc.create({})
         const ids = await fill(session.id, 5)
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         expect(result).toHaveLength(5)
         // reversed from newest-first to chronological
         expect(result.map((item) => item.info.id)).toEqual(ids)
@@ -706,7 +705,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "new response",
         })
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         // Includes compaction boundary: u1, a1, u2, a2
         expect(result[0].info.id).toBe(u1)
         expect(result.length).toBe(4)
@@ -731,7 +730,7 @@ describe("MessageV2.filterCompacted", () => {
         await addCompactionPart(session.id, u1)
         await addUser(session.id, "world")
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         expect(result).toHaveLength(2)
 
         await svc.remove(session.id)
@@ -755,7 +754,7 @@ describe("MessageV2.filterCompacted", () => {
         await addAssistant(session.id, u1, { summary: true, finish: "end_turn", error })
         await addUser(session.id, "retry")
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         // Error assistant doesn't add to completed, so compaction boundary never triggers
         expect(result).toHaveLength(3)
 
@@ -777,7 +776,7 @@ describe("MessageV2.filterCompacted", () => {
         await addAssistant(session.id, u1, { summary: true })
         await addUser(session.id, "next")
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         expect(result).toHaveLength(3)
 
         await svc.remove(session.id)
@@ -832,7 +831,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
 
@@ -888,11 +887,11 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const parentFiltered = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const parentFiltered = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
         expect(parentFiltered.map((item) => item.info.id)).toEqual([c1, s1, u2, a2, u3, a3])
 
         const forked = await svc.fork({ sessionID: session.id })
-        const childFiltered = MessageV2.filterCompacted(MessageV2.stream(forked.id))
+        const childFiltered = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(forked.id)))
         expect(childFiltered).toHaveLength(parentFiltered.length)
 
         const tailPart = childFiltered.flatMap((m) => m.parts).find((p) => p.type === "compaction")
@@ -962,7 +961,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "third reply",
         })
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
 
         expect(result.map((item) => item.info.id)).toEqual([c1, s1, a3, u3, a4])
 
@@ -1039,7 +1038,7 @@ describe("MessageV2.filterCompacted", () => {
           text: "fourth reply",
         })
 
-        const result = MessageV2.filterCompacted(MessageV2.stream(session.id))
+        const result = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
 
         expect(result.map((item) => item.info.id)).toEqual([c2, s2, u3, a3, u4, a4])
 
@@ -1100,9 +1099,9 @@ describe("MessageV2 consistency", () => {
         const session = await svc.create({})
         await fill(session.id, 3)
 
-        const paged = MessageV2.page({ sessionID: session.id, limit: 10 })
+        const paged = await MessageV2.page({ sessionID: session.id, limit: 10 })
         for (const item of paged.items) {
-          const got = MessageV2.get({ sessionID: session.id, messageID: item.info.id as MessageID })
+          const got = await MessageV2.get({ sessionID: session.id, messageID: item.info.id as MessageID })
           expect(got.info).toEqual(item.info)
           expect(got.parts).toEqual(item.parts)
         }
@@ -1119,8 +1118,8 @@ describe("MessageV2 consistency", () => {
         const session = await svc.create({})
         const [id] = await fill(session.id, 1)
 
-        const got = MessageV2.get({ sessionID: session.id, messageID: id })
-        const standalone = MessageV2.parts(id)
+        const got = await MessageV2.get({ sessionID: session.id, messageID: id })
+        const standalone = await MessageV2.parts(id)
         expect(got.parts).toEqual(standalone)
 
         await svc.remove(session.id)
@@ -1135,12 +1134,12 @@ describe("MessageV2 consistency", () => {
         const session = await svc.create({})
         await fill(session.id, 7)
 
-        const streamed = Array.from(MessageV2.stream(session.id))
+        const streamed = await Array.fromAsync(MessageV2.stream(session.id))
 
         const paged = [] as MessageV2.WithParts[]
         let cursor: string | undefined
         while (true) {
-          const result = MessageV2.page({ sessionID: session.id, limit: 3, before: cursor })
+          const result = await MessageV2.page({ sessionID: session.id, limit: 3, before: cursor })
           for (let i = result.items.length - 1; i >= 0; i--) {
             paged.push(result.items[i])
           }
@@ -1162,8 +1161,8 @@ describe("MessageV2 consistency", () => {
         const session = await svc.create({})
         await fill(session.id, 4)
 
-        const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
-        const all = Array.from(MessageV2.stream(session.id)).reverse()
+        const filtered = MessageV2.filterCompacted(await Array.fromAsync(MessageV2.stream(session.id)))
+        const all = (await Array.fromAsync(MessageV2.stream(session.id))).reverse()
 
         expect(filtered.map((m) => m.info.id)).toEqual(all.map((m) => m.info.id))
 
