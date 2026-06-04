@@ -22,7 +22,7 @@ import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { DialogProvider as DialogProviderList } from "@tui/component/dialog-provider"
 import { ErrorComponent } from "@tui/component/error-component"
 import { PluginRouteMissing } from "@tui/component/plugin-route-missing"
-import { ProjectProvider } from "@tui/context/project"
+import { ProjectProvider, useProject } from "@tui/context/project"
 import { EditorContextProvider } from "@tui/context/editor"
 import { useEvent } from "@tui/context/event"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
@@ -214,6 +214,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()
+  const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
   const routes: RouteMap = new Map()
@@ -325,6 +326,33 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (route.data.type === "plugin") {
       renderer.setTerminalTitle(`OC | ${route.data.id}`)
     }
+  })
+
+  // On startup, if the project's session already has user prompts on the
+  // active branch, skip the empty "Ask anything" home screen and resume the
+  // session view. Each project pins to a single `<projectID>_session` id, so
+  // we can derive it from the project ID without an extra lookup. Fires once;
+  // skipped if the user has already navigated away from home.
+  let didAutoResume = false
+  createEffect(() => {
+    if (didAutoResume) return
+    if (route.data.type !== "home") return
+    const projectID = project.project()
+    if (!projectID) return
+    didAutoResume = true
+    const sessionID = `${projectID}_session`
+    void (async () => {
+      try {
+        const res = await sdk.client.session.history({ sessionID }, { throwOnError: false })
+        const items = res.data
+        if (Array.isArray(items) && items.length > 0 && route.data.type === "home") {
+          route.navigate({ type: "session", sessionID })
+        }
+      } catch {
+        // If history can't be fetched (server error, no such session, etc.)
+        // stay on home — the user can still navigate manually.
+      }
+    })()
   })
 
   const args = useArgs()

@@ -276,9 +276,9 @@ export function Session() {
   const exit = useExit()
 
   createEffect(() => {
-    const title = Locale.truncate(session()?.title ?? "", 50)
-    const pad = (text: string) => text.padEnd(10, " ")
-    const weak = (text: string) => UI.Style.TEXT_DIM + pad(text) + UI.Style.TEXT_NORMAL
+    // Read session() so this effect re-runs (and re-sets the message) as the
+    // session loads — keeps the same reactive cadence the original had.
+    void session()
     const logo = UI.logo("  ").split(/\r?\n/)
     return exit.message.set(
       [
@@ -286,9 +286,6 @@ export function Session() {
         `${logo[1] ?? ""}`,
         `${logo[2] ?? ""}`,
         `${logo[3] ?? ""}`,
-        ``,
-        `  ${weak("Session")}${UI.Style.TEXT_NORMAL_BOLD}${title}${UI.Style.TEXT_NORMAL}`,
-        `  ${weak("Continue")}${UI.Style.TEXT_NORMAL_BOLD}opencode -s ${session()?.id}${UI.Style.TEXT_NORMAL}`,
         ``,
       ].join("\n"),
     )

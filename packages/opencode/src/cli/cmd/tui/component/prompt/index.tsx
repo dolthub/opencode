@@ -1766,9 +1766,10 @@ export function Prompt(props: PromptProps) {
         return false
       }
       // Clear the input and refresh chat history from the new branch's DB
-      // state. For `/checkout -b` (create), also reset the view to home —
-      // matches /new's UX since a brand new branch starts a fresh session
-      // history.
+      // state. For `/checkout -b` (create), reset the view to home — a brand
+      // new branch starts with no conversation history. For an existing
+      // branch, check `/history` and resume the session view if there are
+      // already user prompts on it; otherwise drop back to home.
       history.append({ ...store.prompt, mode: currentMode })
       input.extmarks.clear()
       setStore("prompt", { input: "", parts: [] })
@@ -1777,6 +1778,17 @@ export function Prompt(props: PromptProps) {
       if (create) {
         dialog.clear()
         route.navigate({ type: "home" })
+      } else {
+        try {
+          const histRes = await sdk.client.session.history({ sessionID }, { throwOnError: false })
+          const items = histRes.data
+          const hasHistory = Array.isArray(items) && items.length > 0
+          dialog.clear()
+          route.navigate(hasHistory ? { type: "session", sessionID } : { type: "home" })
+        } catch {
+          // If the history lookup fails, leave the current route alone — the
+          // user can navigate manually and the rebuild below still refreshes.
+        }
       }
       void sync.session.rebuild(sessionID).catch(() => {})
       toast.show({
