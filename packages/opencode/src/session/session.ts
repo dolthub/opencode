@@ -36,7 +36,7 @@ import { ModelID, ProviderID } from "@/provider/schema"
 import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Cause, Effect, Layer, Option, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { NonNegativeInt, optionalOmitUndefined, withStatics } from "@/util/schema"
 
@@ -666,6 +666,13 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
             ),
           )
           .get(),
+      ).pipe(
+        Effect.catchCause((cause) => {
+          const error = Cause.squash(cause)
+          if (!Database.isReadQueryError(error)) return Effect.failCause(cause)
+          log.warn("failed to read tool part", { input, error })
+          return Effect.succeed(undefined)
+        }),
       )
       if (!row) return
       return {
