@@ -24,7 +24,7 @@ import { tmpdir } from "os"
 import path from "path"
 import net from "net"
 import { sql } from "drizzle-orm"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -90,6 +90,7 @@ async function main() {
     await waitReady(port, db)
 
     const { Database } = await import("@/storage/db")
+    const { SyncEvent } = await import("@/sync")
 
     // ── helpers bound to the real Database API ──────────────────────────────
     const runPinned = (branch: string, statement: string) =>
@@ -119,8 +120,28 @@ async function main() {
     // ── setup: a table present on every branch ──────────────────────────────
     await Database.useAsync(() => 0) // finish adapter init + migrations
     await Database.executeRaw("CREATE TABLE pintest (id varchar(64) PRIMARY KEY, val varchar(64))")
+    await Database.executeRaw("CREATE TABLE syncpin (id varchar(64) PRIMARY KEY, val varchar(64))")
     await commitActive("create pintest")
     await Database.createBranch("sess", "main", false)
+
+    const SyncPinEvent = SyncEvent.define({
+      type: "test.syncpin.updated",
+      version: 1,
+      aggregate: "sessionID",
+      schema: Schema.Struct({
+        sessionID: Schema.String,
+        id: Schema.String,
+        val: Schema.String,
+      }),
+    })
+    SyncEvent.init({
+      projectors: [
+        SyncEvent.project(SyncPinEvent, async (db, data) => {
+          await (db as any)
+            .execute(sql.raw(`INSERT INTO syncpin (id, val) VALUES ('${data.id}', '${data.val}')`))
+        }),
+      ],
+    })
 
     // ── (a)+(b) read pinning ────────────────────────────────────────────────
     console.log("read pinning:")
@@ -168,6 +189,28 @@ async function main() {
     check("useEffect write pinned to sess via CurrentBranch", (await committedIds("sess")).includes("eff1"))
     await Database.changeBranch("main")
     check("useEffect write did not leak onto main", !(await committedIds("main")).includes("eff1"))
+
+    // ── (e) SyncEvent async projector path preserves CurrentBranch ──────────
+    console.log("SyncEvent async projector pinning:")
+    await Database.changeBranch("main")
+    await Effect.runPromise(
+      SyncEvent.Service.use((sync) =>
+        sync.run(
+          SyncPinEvent,
+          { sessionID: "ses_test", id: "sync1", val: "x" },
+          { publish: false },
+        ),
+      ).pipe(Effect.provide(SyncEvent.defaultLayer), Effect.provideService(Database.CurrentBranch, "sess")),
+    )
+    await Database.changeBranch("sess")
+    await commitActive("sync1 on sess")
+    const syncRows = async (branch: string) => {
+      const res = await Database.executeRaw(`SELECT id FROM syncpin AS OF '${branch}'`)
+      return res.kind === "rows" ? (res.rows as any[]).map((r) => String(r.id)) : []
+    }
+    check("SyncEvent projector write pinned to sess via CurrentBranch", (await syncRows("sess")).includes("sync1"))
+    await Database.changeBranch("main")
+    check("SyncEvent projector write did not leak onto main", !(await syncRows("main")).includes("sync1"))
 
     Database.close()
   } finally {

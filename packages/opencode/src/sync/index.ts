@@ -149,10 +149,11 @@ export const layer = Layer.effect(Service)(
         : undefined
 
       if (Database.isAsync) {
+        const branch = yield* Database.CurrentBranch
         yield* Effect.promise(() => {
           const id = EventID.ascending()
           const event = { id, seq: 0, aggregateID: agg, data }
-          return processAsync(def, event, { publish, context })
+          return Database.withBranchAsync(branch, () => processAsync(def, event, { publish, context }))
         })
       } else {
         // Note that this is an "immediate" transaction which is critical.
