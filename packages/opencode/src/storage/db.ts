@@ -1,7 +1,8 @@
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 import { sql } from "drizzle-orm"
 export * from "drizzle-orm"
-import { Effect } from "effect"
+import { Effect, Context } from "effect"
+import { AsyncLocalStorage } from "async_hooks"
 import { LocalContext } from "@/util/local-context"
 import { lazy } from "../util/lazy"
 import { Global } from "@opencode-ai/core/global"
@@ -191,6 +192,80 @@ export const Client = Object.assign(
 // (e.g. JsonMigration) should gate on this before using Database.Client().
 export const isAsync = !!(MySQLModule && Flag.OPENCODE_MYSQL_URL)
 
+// ── Branch pinning ──────────────────────────────────────────────────────────
+//
+// Dolt's active branch is *ambient* connection state (one shared connection,
+// `connectionLimit: 1`). A logical operation (a session turn, a read) spans many
+// separate SQL statements, but assumes the branch stays fixed across all of
+// them. Any concurrent code that flips the branch — opening another session,
+// project bootstrap, a branch handler — can land a statement on the wrong
+// branch, splitting one session's data across branches (and silently losing the
+// part of it that's only in another branch's working set).
+//
+// To make branch state safe we (1) carry the *intended* branch for the current
+// work in an Effect Context.Reference (inherited by forked fibers) mirrored into
+// an AsyncLocalStorage (for the plain-promise read path), and (2) re-pin the
+// connection to that branch immediately before every async data op, with the
+// whole (check active → checkout → run) sequence serialized so no other op can
+// interleave between the pin and the statement. Re-pinning per op is idempotent
+// and self-correcting: even if something switched the branch away, the next op
+// switches it back before it runs.
+//
+// When no branch is set (migrations, project bootstrap, scripts) or the adapter
+// is not Dolt, pinning is skipped and behavior is identical to before.
+
+// The intended branch for the current fiber. Provided via Effect.provideService
+// around the prompt loop; inherited by forked fibers (Effect copies context on
+// fork) so compaction's background writes pin to the same branch as the turn
+// that spawned them.
+export const CurrentBranch = Context.Reference<string | undefined>("@opencode/Database/CurrentBranch", {
+  defaultValue: () => undefined,
+})
+
+// Plain-promise mirror of CurrentBranch for code that reaches the DB outside an
+// Effect (the streaming read path). Set by withBranchAsync around the read body.
+const branchStore = new AsyncLocalStorage<string | undefined>()
+
+// Serializes every async adapter operation so a branch switch can never run
+// between an op's pin and its statement. connectionLimit:1 serializes at the
+// SQL level, but not the multi-await JS sequences (currentBranch → changeBranch
+// → query) that the pin introduces, so we need this explicit FIFO queue.
+let queue: Promise<unknown> = Promise.resolve()
+function enqueue<T>(job: () => Promise<T>): Promise<T> {
+  const run = queue.then(job, job)
+  // Keep the chain alive but swallow outcomes so one failed job can't poison the
+  // queue for the next.
+  queue = run.then(
+    () => {},
+    () => {},
+  )
+  return run
+}
+
+// Run a data op on `branch`, re-pinning the Dolt connection first. The pin and
+// the op run as one serialized job. `branch` undefined (or a non-Dolt adapter)
+// means "use whatever branch is active", preserving legacy behavior.
+function pinnedAsync<T>(branch: string | undefined, callback: (db: TxOrDb) => T | Promise<T>): Promise<T> {
+  return enqueue(async () => {
+    // Adapter() must run before awaitMigration(): it is what kicks off the
+    // migration promise that awaitMigration() then waits on.
+    const adapter = Adapter()
+    await awaitMigration()
+    if (branch && adapter.mysqlDb) {
+      const active = await adapter.currentBranch()
+      if (active !== branch) await adapter.changeBranch(branch)
+    }
+    return callback(adapter.db)
+  })
+}
+
+// Run a plain async function with `branch` as the ambient branch for any
+// Database.useAsync calls it makes. Used by the streaming read path, which is
+// not Effect-based and so can't read CurrentBranch directly.
+export function withBranchAsync<T>(branch: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return branchStore.run(branch, fn)
+}
+
 // Pure path computation — no DB side effects.
 export function adapterPath(): string {
   if (Flag.OPENCODE_MYSQL_URL) return Flag.OPENCODE_MYSQL_URL
@@ -269,36 +344,49 @@ async function awaitMigration() {
 }
 
 // Async variant for MySQL (and optionally SQLite). Awaits any pending
-// migration before calling the callback with the active database.
+// migration before calling the callback with the active database, re-pinning the
+// Dolt connection to the ambient branch (branchStore) first so the statement
+// can't land on a branch some other concurrent op switched us to.
 // For MySQL, adapter.db holds the SQLite-compat proxy created by db.mysql.ts.
 export async function useAsync<T>(callback: (db: TxOrDb) => T | Promise<T>): Promise<T> {
-  const db = Adapter().db
-  await awaitMigration()
-  return callback(db)
+  return pinnedAsync(branchStore.getStore(), callback)
 }
 
 export async function transactionAsync<T>(callback: (db: MySQLDB) => Promise<T>): Promise<T> {
-  await awaitMigration()
-  const adapter = Adapter()
-  if (!adapter.mysqlDb) throw new Error("transactionAsync requires MySQL adapter (OPENCODE_MYSQL_URL)")
-  return (adapter.mysqlDb as MySQLDB).transaction(callback as any)
+  const branch = branchStore.getStore()
+  return enqueue(async () => {
+    const adapter = Adapter()
+    await awaitMigration()
+    if (!adapter.mysqlDb) throw new Error("transactionAsync requires MySQL adapter (OPENCODE_MYSQL_URL)")
+    if (branch) {
+      const active = await adapter.currentBranch()
+      if (active !== branch) await adapter.changeBranch(branch)
+    }
+    return (adapter.mysqlDb as MySQLDB).transaction(callback as any)
+  })
 }
 
 // Effect-friendly wrapper: synchronous for SQLite, async for MySQL.
 // Use this inside Effect generators instead of Effect.sync(() => Database.use(...)).
 // Callback is typed against the SQLite DB since all tables are SQLite-defined;
 // the MySQL path casts internally so the same query code runs on both adapters.
+// On the async path the op is pinned to CurrentBranch (the FiberRef set for the
+// running turn) so every write lands on the session's branch.
 export function useEffect<T>(callback: (db: TxOrDb) => T | Promise<T>): Effect.Effect<T> {
-  if (isAsync) return Effect.promise(() => useAsync(callback))
+  if (isAsync)
+    return Effect.gen(function* () {
+      const branch = yield* CurrentBranch
+      return yield* Effect.promise(() => pinnedAsync(branch, callback))
+    })
   return Effect.sync(() => use(callback as (db: TxOrDb) => T))
 }
 
 export function commit(message: string): Effect.Effect<void> {
-  return Effect.promise(() => Promise.resolve(Adapter().commit(message)))
+  return Effect.promise(() => enqueue(() => Promise.resolve(Adapter().commit(message))))
 }
 
 export function commitEmpty(message: string): Effect.Effect<void> {
-  return Effect.promise(() => Promise.resolve(Adapter().commitEmpty(message)))
+  return Effect.promise(() => enqueue(() => Promise.resolve(Adapter().commitEmpty(message))))
 }
 
 export async function isDirty(): Promise<boolean> {
@@ -390,24 +478,28 @@ export async function diffStat(param1: string, param2: string) {
   return Adapter().diffStat(param1, param2)
 }
 
+// Branch-mutating ops go through the same serial queue as pinned data ops so a
+// branch switch can never run between a pinned op's `active branch` check and
+// its statement (which would defeat the pin). They do not themselves pin — they
+// manage branches.
 export async function merge(branch: string, squash: boolean = false): Promise<void> {
-  await Adapter().merge(branch, squash)
+  await enqueue(() => Promise.resolve(Adapter().merge(branch, squash)))
 }
 
 export async function reset(ref: string): Promise<void> {
-  await Adapter().reset(ref)
+  await enqueue(() => Promise.resolve(Adapter().reset(ref)))
 }
 
 export async function checkoutNew(name: string, force: boolean = false): Promise<void> {
-  await Adapter().checkoutNew(name, force)
+  await enqueue(() => Promise.resolve(Adapter().checkoutNew(name, force)))
 }
 
 export async function createBranch(name: string, startPoint: string | null, force: boolean): Promise<void> {
-  await Adapter().createBranch(name, startPoint, force)
+  await enqueue(() => Promise.resolve(Adapter().createBranch(name, startPoint, force)))
 }
 
 export async function changeBranch(name: string): Promise<void> {
-  await Adapter().changeBranch(name)
+  await enqueue(() => Promise.resolve(Adapter().changeBranch(name)))
 }
 
 export async function hasBranch(name: string): Promise<boolean> {

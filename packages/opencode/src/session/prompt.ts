@@ -1632,13 +1632,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+      // Pin every DB write in this turn (and in forked compaction work, which
+      // inherits the FiberRef) to the session's own Dolt branch. Without this a
+      // concurrent op that flips the shared connection's branch can strand this
+      // session's messages/parts on the wrong branch, splitting and losing them.
+      const branch = yield* MessageV2.sessionBranch(input.sessionID)
+      return yield* state
+        .ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+        .pipe(Effect.provideService(Database.CurrentBranch, branch))
     })
 
     const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.shell")(
       function* (input: ShellInput) {
         const ready = yield* Latch.make()
-        return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
+        const branch = yield* MessageV2.sessionBranch(input.sessionID)
+        return yield* state
+          .startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
+          .pipe(Effect.provideService(Database.CurrentBranch, branch))
       },
     )
 

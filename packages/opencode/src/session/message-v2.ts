@@ -1158,14 +1158,38 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   return result
 }
 
-export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID, asOf?: string) {
+// Resolve the Dolt branch a session's message/part rows live on. Read AS OF
+// 'main' because the session row (and its `branch`) is durably committed there
+// regardless of which branch the connection currently has checked out. Returns
+// undefined on non-Dolt adapters (no branches).
+export const sessionBranch = Effect.fnUntraced(function* (sessionID: SessionID) {
+  if (!Database.isAsync) return undefined
   return yield* Effect.promise(async () => {
-    const items: WithParts[] = []
-    for await (const item of stream(sessionID, asOf)) {
-      items.push(item)
-    }
-    return filterCompacted(items)
+    const row = await Database.useAsync((db) =>
+      Database.getAsOf<{ branch: string | null }>(
+        db.select({ branch: SessionTable.branch }).from(SessionTable).where(eq(SessionTable.id, sessionID)),
+        "main",
+      ),
+    )
+    return row?.branch ?? undefined
   })
+})
+
+export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID, asOf?: string) {
+  // Pin reads to the session's branch so the message/part stream is read from
+  // that branch's working set, not whatever branch the shared connection happens
+  // to be on. Without this a session can read as "empty" / 404 a part when the
+  // connection was left on another branch (e.g. main) by a concurrent op.
+  const branch = yield* sessionBranch(sessionID)
+  return yield* Effect.promise(() =>
+    Database.withBranchAsync(branch, async () => {
+      const items: WithParts[] = []
+      for await (const item of stream(sessionID, asOf)) {
+        items.push(item)
+      }
+      return filterCompacted(items)
+    }),
+  )
 })
 
 export function fromError(
