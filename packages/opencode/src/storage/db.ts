@@ -242,20 +242,54 @@ function enqueue<T>(job: () => Promise<T>): Promise<T> {
   return run
 }
 
+const readRetryDelays = [50, 150]
+
+function sqlErrorMessages(err: unknown): string[] {
+  if (!(err instanceof Error)) return [String(err)]
+  const cause = (err as Error & { cause?: unknown; sql?: unknown; sqlMessage?: unknown }).cause
+  return [
+    err.message,
+    typeof (err as Error & { sql?: unknown }).sql === "string" ? String((err as Error & { sql?: unknown }).sql) : undefined,
+    typeof (err as Error & { sqlMessage?: unknown }).sqlMessage === "string"
+      ? String((err as Error & { sqlMessage?: unknown }).sqlMessage)
+      : undefined,
+    ...(cause ? sqlErrorMessages(cause) : []),
+  ].filter((msg): msg is string => msg !== undefined)
+}
+
+export function isReadQueryError(err: unknown): boolean {
+  return sqlErrorMessages(err).some((message) => {
+    const trimmed = message.trim()
+    return /^select\b/i.test(trimmed) || /^failed query:\s*select\b/i.test(trimmed)
+  })
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 // Run a data op on `branch`, re-pinning the Dolt connection first. The pin and
 // the op run as one serialized job. `branch` undefined (or a non-Dolt adapter)
 // means "use whatever branch is active", preserving legacy behavior.
 function pinnedAsync<T>(branch: string | undefined, callback: (db: TxOrDb) => T | Promise<T>): Promise<T> {
   return enqueue(async () => {
-    // Adapter() must run before awaitMigration(): it is what kicks off the
-    // migration promise that awaitMigration() then waits on.
-    const adapter = Adapter()
-    await awaitMigration()
-    if (branch && adapter.mysqlDb) {
-      const active = await adapter.currentBranch()
-      if (active !== branch) await adapter.changeBranch(branch)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Adapter() must run before awaitMigration(): it is what kicks off the
+        // migration promise that awaitMigration() then waits on.
+        const adapter = Adapter()
+        await awaitMigration()
+        if (branch && adapter.mysqlDb) {
+          const active = await adapter.currentBranch()
+          if (active !== branch) await adapter.changeBranch(branch)
+        }
+        return await callback(adapter.db)
+      } catch (err) {
+        if (!isReadQueryError(err) || attempt >= readRetryDelays.length) throw err
+        log.warn("retrying failed read query", { branch, attempt: attempt + 1, error: err })
+        await delay(readRetryDelays[attempt])
+      }
     }
-    return callback(adapter.db)
   })
 }
 
@@ -414,7 +448,18 @@ export async function getCommitLog() {
 }
 
 export async function executeRaw(statement: string) {
-  return Adapter().executeRaw(statement)
+  return enqueue(async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await Adapter().executeRaw(statement)
+      } catch (err) {
+        const error = new Error(`Failed query: ${statement}`, { cause: err })
+        if (!isReadQueryError(error) || attempt >= readRetryDelays.length) throw error
+        log.warn("retrying failed raw read query", { attempt: attempt + 1, error })
+        await delay(readRetryDelays[attempt])
+      }
+    }
+  })
 }
 
 // MySQL-style escape for inlining drizzle's positional `?` params when we
@@ -459,7 +504,9 @@ export async function selectAsOf<T>(query: DrizzleSelectish, asOf?: string): Pro
   )
   let i = 0
   const finalSql = sqlWithAsOf.replace(/\?/g, () => escapeMySqlValue(compiled.params[i++]))
-  const result = await adapter.executeRaw(finalSql)
+  const result = await Promise.resolve(adapter.executeRaw(finalSql)).catch((err: unknown) => {
+    throw new Error(`Failed query: ${finalSql}`, { cause: err })
+  })
   if (result.kind !== "rows") return [] as T[]
   return result.rows as T[]
 }

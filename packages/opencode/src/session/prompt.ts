@@ -1387,7 +1387,35 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         }
 
         if (input.noReply === true) return message
-        return yield* loop({ sessionID: input.sessionID })
+        return yield* loop({ sessionID: input.sessionID }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              const error = Cause.squash(cause)
+              if (!Database.isReadQueryError(error)) return yield* Effect.failCause(cause)
+
+              log.warn("prompt loop failed while reading session history", { sessionID: input.sessionID, error })
+              const assistantMessage: MessageV2.Assistant = yield* sessions.updateMessage({
+                id: MessageID.ascending(),
+                parentID: message.info.id,
+                role: "assistant",
+                mode: message.info.agent,
+                agent: message.info.agent,
+                variant: message.info.model.variant,
+                path: { cwd: session.directory, root: session.directory },
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                modelID: message.info.model.modelID,
+                providerID: message.info.model.providerID,
+                time: { created: Date.now(), completed: Date.now() },
+                sessionID: input.sessionID,
+                finish: "error",
+                error: MessageV2.fromError(error, { providerID: message.info.model.providerID }),
+              })
+              yield* status.set(input.sessionID, { type: "idle" })
+              return { info: assistantMessage, parts: [] }
+            }),
+          ),
+        )
       },
     )
 
