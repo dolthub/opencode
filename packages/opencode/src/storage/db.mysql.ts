@@ -443,7 +443,18 @@ function errorMessages(err: unknown, seen = new Set<unknown>()): string[] {
     .map(String)
 }
 
-function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>): any {
+async function observeQuery<T>(target: unknown, onError: (err: unknown) => Promise<void>, afterQuery: () => Promise<void>): Promise<T> {
+  try {
+    const result = await Promise.resolve(target)
+    await afterQuery()
+    return result as T
+  } catch (err) {
+    await onError(err)
+    throw err
+  }
+}
+
+function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>, afterQuery: () => Promise<void>): any {
   if (target === null || target === undefined || typeof target !== "object") return target
 
   return new Proxy(target, {
@@ -451,46 +462,37 @@ function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>)
       // SQLite termination methods that MySQL doesn't have ─────────────────────
       if (prop === "get") {
         return async () => {
-          const rows = await Promise.resolve(t).catch(async (err) => {
-            await onError(err)
-            throw err
-          })
+          const rows = await observeQuery<unknown>(t, onError, afterQuery)
           return Array.isArray(rows) ? rows[0] : undefined
         }
       }
       if (prop === "all") {
         return async () => {
-          const rows = await Promise.resolve(t).catch(async (err) => {
-            await onError(err)
-            throw err
-          })
+          const rows = await observeQuery<unknown>(t, onError, afterQuery)
           return Array.isArray(rows) ? rows : []
         }
       }
       if (prop === "run") {
         return async () => {
-          await Promise.resolve(t).catch(async (err) => {
-            await onError(err)
-            throw err
-          })
+          await observeQuery(t, onError, afterQuery)
         }
       }
       // SQLite's RETURNING clause ─ MySQL doesn't support it as a chained
       // method. We return the same proxy so .get()/.all() still work on the
       // DML result. Callers that need the actual row must do a follow-up SELECT.
       if (prop === "returning") {
-        return () => wrapQueryBuilder(t, onError)
+        return () => wrapQueryBuilder(t, onError, afterQuery)
       }
       // SQLite conflict helpers → MySQL equivalents ────────────────────────────
       if (prop === "onConflictDoUpdate") {
         return (config: { target?: unknown; set: Record<string, unknown> }) =>
-          wrapQueryBuilder(t.onDuplicateKeyUpdate({ set: config.set }), onError)
+          wrapQueryBuilder(t.onDuplicateKeyUpdate({ set: config.set }), onError, afterQuery)
       }
       if (prop === "onConflictDoNothing") {
         return () => {
           const cfg = t.config
           if (cfg) cfg.ignore = true
-          return wrapQueryBuilder(t, onError)
+          return wrapQueryBuilder(t, onError, afterQuery)
         }
       }
 
@@ -498,29 +500,17 @@ function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>)
       // when the proxy is awaited (await proxy → proxy.then(resolve, reject)).
       if (prop === "then") {
         return (resolve: unknown, reject: unknown) =>
-          Promise.resolve(t)
-            .catch(async (err) => {
-              await onError(err)
-              throw err
-            })
+          observeQuery(t, onError, afterQuery)
             .then(resolve as never, reject as never)
       }
       if (prop === "catch") {
         return (reject: unknown) =>
-          Promise.resolve(t)
-            .catch(async (err) => {
-              await onError(err)
-              throw err
-            })
+          observeQuery(t, onError, afterQuery)
             .catch(reject as never)
       }
       if (prop === "finally") {
         return (fn: unknown) =>
-          Promise.resolve(t)
-            .catch(async (err) => {
-              await onError(err)
-              throw err
-            })
+          observeQuery(t, onError, afterQuery)
             .finally(fn as never)
       }
 
@@ -535,7 +525,7 @@ function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>)
             typeof result === "object" &&
             typeof (result as any).execute === "function"
           ) {
-            return wrapQueryBuilder(result, onError)
+            return wrapQueryBuilder(result, onError, afterQuery)
           }
           return result
         }
@@ -545,7 +535,7 @@ function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>)
   })
 }
 
-function wrapMySqlDb(getDb: () => MySql2Database, onError: (err: unknown) => Promise<void>): DB {
+function wrapMySqlDb(getDb: () => MySql2Database, onError: (err: unknown) => Promise<void>, afterQuery: () => Promise<void>): DB {
   return new Proxy({} as DB, {
     get(_target, prop: string | symbol) {
       const val = (getDb() as any)[prop]
@@ -554,7 +544,8 @@ function wrapMySqlDb(getDb: () => MySql2Database, onError: (err: unknown) => Pro
           const db = getDb()
           const result = val.apply(db, args)
           if (result !== null && result !== undefined && typeof result === "object") {
-            return wrapQueryBuilder(result, onError)
+            if (typeof (result as any).then === "function") return observeQuery(result, onError, afterQuery)
+            return wrapQueryBuilder(result, onError, afterQuery)
           }
           return result
         }
@@ -586,6 +577,7 @@ export function init(connectionString: string): StorageAdapter {
   let connection: Connection | undefined
   let mysqlDb: MySql2Database | undefined
   let connecting: Promise<MySql2Database> | undefined
+  let protocolWarning: unknown
   let closed = false
 
   const connect = async (): Promise<MySql2Database> => {
@@ -593,6 +585,10 @@ export function init(connectionString: string): StorageAdapter {
     if (connecting) return connecting
     if (closed) throw new Error("Database connection is closed")
     connecting = mysql.createConnection(options).then((conn) => {
+      const raw = (conn as unknown as { connection?: { on?: (event: string, cb: (err: unknown) => void) => void } }).connection
+      raw?.on?.("warn", (err) => {
+        if (isProtocolError(err)) protocolWarning = err
+      })
       connection = conn
       mysqlDb = drizzle({ client: conn, logger: drizzleLogger }) as MySql2Database
       return mysqlDb
@@ -610,6 +606,7 @@ export function init(connectionString: string): StorageAdapter {
   const reconnect = async (err: unknown): Promise<void> => {
     if (!isProtocolError(err) || closed) return
     log.warn("reconnecting mysql connection after protocol error", { error: err })
+    protocolWarning = undefined
     const old = connection
     connection = undefined
     mysqlDb = undefined
@@ -617,9 +614,18 @@ export function init(connectionString: string): StorageAdapter {
     await connect()
   }
 
+  const reconnectAfterWarning = async (): Promise<void> => {
+    if (!protocolWarning) return
+    const err = protocolWarning
+    protocolWarning = undefined
+    await reconnect(err)
+  }
+
   const execute = async <T>(statement: Parameters<MySql2Database["execute"]>[0]): Promise<T> => {
     try {
-      return (await (await connect()).execute(statement)) as T
+      const result = (await (await connect()).execute(statement)) as T
+      await reconnectAfterWarning()
+      return result
     } catch (err) {
       await reconnect(err)
       throw err
@@ -635,8 +641,8 @@ export function init(connectionString: string): StorageAdapter {
   }
 
   return {
-    db: wrapMySqlDb(currentDb, reconnect),
-    mysqlDb: wrapMySqlDb(currentDb, reconnect),
+    db: wrapMySqlDb(currentDb, reconnect, reconnectAfterWarning),
+    mysqlDb: wrapMySqlDb(currentDb, reconnect, reconnectAfterWarning),
     path: connectionString,
     migrate: async () => {
       for (const sql of DDL) {
