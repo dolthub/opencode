@@ -1372,50 +1372,53 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.prompt")(
       function* (input: PromptInput) {
-        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-        yield* revert.cleanup(session)
-        const message = yield* createUserMessage(input)
-        yield* sessions.touch(input.sessionID)
+        const branch = yield* MessageV2.sessionBranch(input.sessionID)
+        return yield* Effect.gen(function* () {
+          const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+          yield* revert.cleanup(session)
+          const message = yield* createUserMessage(input)
+          yield* sessions.touch(input.sessionID)
 
-        const permissions: Permission.Ruleset = []
-        for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-          permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-        }
-        if (permissions.length > 0) {
-          session.permission = permissions
-          yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
-        }
+          const permissions: Permission.Ruleset = []
+          for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+            permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
+          }
+          if (permissions.length > 0) {
+            session.permission = permissions
+            yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+          }
 
-        if (input.noReply === true) return message
-        return yield* loop({ sessionID: input.sessionID }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              const error = Cause.squash(cause)
-              if (!Database.isReadQueryError(error)) return yield* Effect.failCause(cause)
+          if (input.noReply === true) return message
+          return yield* loop({ sessionID: input.sessionID }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.gen(function* () {
+                const error = Cause.squash(cause)
+                if (!Database.isReadQueryError(error)) return yield* Effect.failCause(cause)
 
-              log.warn("prompt loop failed while reading session history", { sessionID: input.sessionID, error })
-              const assistantMessage: MessageV2.Assistant = yield* sessions.updateMessage({
-                id: MessageID.ascending(),
-                parentID: message.info.id,
-                role: "assistant",
-                mode: message.info.agent,
-                agent: message.info.agent,
-                variant: message.info.model.variant,
-                path: { cwd: session.directory, root: session.directory },
-                cost: 0,
-                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-                modelID: message.info.model.modelID,
-                providerID: message.info.model.providerID,
-                time: { created: Date.now(), completed: Date.now() },
-                sessionID: input.sessionID,
-                finish: "error",
-                error: MessageV2.fromError(error, { providerID: message.info.model.providerID }),
-              })
-              yield* status.set(input.sessionID, { type: "idle" })
-              return { info: assistantMessage, parts: [] }
-            }),
-          ),
-        )
+                log.warn("prompt loop failed while reading session history", { sessionID: input.sessionID, error })
+                const assistantMessage: MessageV2.Assistant = yield* sessions.updateMessage({
+                  id: MessageID.ascending(),
+                  parentID: message.info.id,
+                  role: "assistant",
+                  mode: message.info.agent,
+                  agent: message.info.agent,
+                  variant: message.info.model.variant,
+                  path: { cwd: session.directory, root: session.directory },
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  modelID: message.info.model.modelID,
+                  providerID: message.info.model.providerID,
+                  time: { created: Date.now(), completed: Date.now() },
+                  sessionID: input.sessionID,
+                  finish: "error",
+                  error: MessageV2.fromError(error, { providerID: message.info.model.providerID }),
+                })
+                yield* status.set(input.sessionID, { type: "idle" })
+                return { info: assistantMessage, parts: [] }
+              }),
+            ),
+          )
+        }).pipe(Effect.provideService(Database.CurrentBranch, branch))
       },
     )
 
@@ -1660,10 +1663,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      // Pin every DB write in this turn (and in forked compaction work, which
-      // inherits the FiberRef) to the session's own Dolt branch. Without this a
-      // concurrent op that flips the shared connection's branch can strand this
-      // session's messages/parts on the wrong branch, splitting and losing them.
+      // Keep direct loop callers pinned too. prompt() already wraps its initial
+      // user-message writes and this loop; forked compaction work inherits the
+      // FiberRef and stays on the same session branch.
       const branch = yield* MessageV2.sessionBranch(input.sessionID)
       return yield* state
         .ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
