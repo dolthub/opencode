@@ -242,7 +242,7 @@ function enqueue<T>(job: () => Promise<T>): Promise<T> {
   return run
 }
 
-const readRetryDelays = [50, 150]
+const queryRetryDelays = [50, 150]
 
 function sqlErrorMessages(err: unknown): string[] {
   if (!(err instanceof Error)) return [String(err)]
@@ -262,6 +262,17 @@ export function isReadQueryError(err: unknown): boolean {
     const trimmed = message.trim()
     return /^select\b/i.test(trimmed) || /^failed query:\s*select\b/i.test(trimmed)
   })
+}
+
+function isIdempotentUpsertQueryError(err: unknown): boolean {
+  return sqlErrorMessages(err).some((message) => {
+    const trimmed = message.trim()
+    return /^failed query:\s*insert\s+into\s+`?(message|part)`?[\s\S]*\bon duplicate key update\b/i.test(trimmed)
+  })
+}
+
+function isRetryableQueryError(err: unknown): boolean {
+  return isReadQueryError(err) || isIdempotentUpsertQueryError(err)
 }
 
 function delay(ms: number) {
@@ -285,9 +296,9 @@ function pinnedAsync<T>(branch: string | undefined, callback: (db: TxOrDb) => T 
         }
         return await callback(adapter.db)
       } catch (err) {
-        if (!isReadQueryError(err) || attempt >= readRetryDelays.length) throw err
-        log.warn("retrying failed read query", { branch, attempt: attempt + 1, error: err })
-        await delay(readRetryDelays[attempt])
+        if (!isRetryableQueryError(err) || attempt >= queryRetryDelays.length) throw err
+        log.warn("retrying failed query", { branch, attempt: attempt + 1, error: err })
+        await delay(queryRetryDelays[attempt])
       }
     }
   })
@@ -454,9 +465,9 @@ export async function executeRaw(statement: string) {
         return await Adapter().executeRaw(statement)
       } catch (err) {
         const error = new Error(`Failed query: ${statement}`, { cause: err })
-        if (!isReadQueryError(error) || attempt >= readRetryDelays.length) throw error
+        if (!isReadQueryError(error) || attempt >= queryRetryDelays.length) throw error
         log.warn("retrying failed raw read query", { attempt: attempt + 1, error })
-        await delay(readRetryDelays[attempt])
+        await delay(queryRetryDelays[attempt])
       }
     }
   })
