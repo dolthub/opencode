@@ -2,7 +2,7 @@ import { mysqlTable, varchar, text, int, bigint, json, boolean, index, primaryKe
 import { drizzle } from "drizzle-orm/mysql2"
 import { sql } from "drizzle-orm"
 import type { MySql2Database } from "drizzle-orm/mysql2"
-import mysql from "mysql2/promise"
+import mysql, { type Connection } from "mysql2/promise"
 import * as Log from "@opencode-ai/core/util/log"
 import type { StorageAdapter, Journal, DB } from "./db.adapter"
 import { SQLiteTextJson } from "drizzle-orm/sqlite-core"
@@ -429,53 +429,99 @@ const DDL = [
 // termination API as the SQLite drizzle adapter. This lets all query code in the
 // codebase stay SQLite-shaped while actually running against MySQL at runtime.
 
-function wrapQueryBuilder(target: any): any {
+function isProtocolError(err: unknown): boolean {
+  const messages = errorMessages(err).join("\n")
+  return /packets? out of order|PROTOCOL_PACKETS_OUT_OF_ORDER|packet sequence|PROTOCOL_CONNECTION_LOST|ECONNRESET|EPIPE|fatal error|closed state|connection is closed/i.test(messages)
+}
+
+function errorMessages(err: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof err !== "object" || err === null || seen.has(err)) return [String(err)]
+  seen.add(err)
+  const record = err as Record<string, unknown>
+  return [record.code, record.errno, record.sqlState, record.sqlMessage, record.message, ...errorMessages(record.cause, seen)]
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map(String)
+}
+
+function wrapQueryBuilder(target: any, onError: (err: unknown) => Promise<void>): any {
   if (target === null || target === undefined || typeof target !== "object") return target
 
   return new Proxy(target, {
-    get(t, prop: string) {
+    get(t, prop: string | symbol) {
       // SQLite termination methods that MySQL doesn't have ─────────────────────
       if (prop === "get") {
         return async () => {
-          const rows = await t
+          const rows = await Promise.resolve(t).catch(async (err) => {
+            await onError(err)
+            throw err
+          })
           return Array.isArray(rows) ? rows[0] : undefined
         }
       }
       if (prop === "all") {
         return async () => {
-          const rows = await t
+          const rows = await Promise.resolve(t).catch(async (err) => {
+            await onError(err)
+            throw err
+          })
           return Array.isArray(rows) ? rows : []
         }
       }
       if (prop === "run") {
         return async () => {
-          await t
+          await Promise.resolve(t).catch(async (err) => {
+            await onError(err)
+            throw err
+          })
         }
       }
       // SQLite's RETURNING clause ─ MySQL doesn't support it as a chained
       // method. We return the same proxy so .get()/.all() still work on the
       // DML result. Callers that need the actual row must do a follow-up SELECT.
       if (prop === "returning") {
-        return () => wrapQueryBuilder(t)
+        return () => wrapQueryBuilder(t, onError)
       }
       // SQLite conflict helpers → MySQL equivalents ────────────────────────────
       if (prop === "onConflictDoUpdate") {
         return (config: { target?: unknown; set: Record<string, unknown> }) =>
-          wrapQueryBuilder(t.onDuplicateKeyUpdate({ set: config.set }))
+          wrapQueryBuilder(t.onDuplicateKeyUpdate({ set: config.set }), onError)
       }
       if (prop === "onConflictDoNothing") {
         return () => {
           const cfg = t.config
           if (cfg) cfg.ignore = true
-          return wrapQueryBuilder(t)
+          return wrapQueryBuilder(t, onError)
         }
       }
 
       // Pass Promise protocol through unwrapped to prevent infinite recursion
       // when the proxy is awaited (await proxy → proxy.then(resolve, reject)).
-      if (prop === "then" || prop === "catch" || prop === "finally") {
-        const val = t[prop]
-        return typeof val === "function" ? val.bind(t) : val
+      if (prop === "then") {
+        return (resolve: unknown, reject: unknown) =>
+          Promise.resolve(t)
+            .catch(async (err) => {
+              await onError(err)
+              throw err
+            })
+            .then(resolve as never, reject as never)
+      }
+      if (prop === "catch") {
+        return (reject: unknown) =>
+          Promise.resolve(t)
+            .catch(async (err) => {
+              await onError(err)
+              throw err
+            })
+            .catch(reject as never)
+      }
+      if (prop === "finally") {
+        return (fn: unknown) =>
+          Promise.resolve(t)
+            .catch(async (err) => {
+              await onError(err)
+              throw err
+            })
+            .finally(fn as never)
       }
 
       // Delegate everything else, wrapping returned query builders ─────────────
@@ -489,7 +535,7 @@ function wrapQueryBuilder(target: any): any {
             typeof result === "object" &&
             typeof (result as any).execute === "function"
           ) {
-            return wrapQueryBuilder(result)
+            return wrapQueryBuilder(result, onError)
           }
           return result
         }
@@ -499,15 +545,16 @@ function wrapQueryBuilder(target: any): any {
   })
 }
 
-function wrapMySqlDb(mysqlDb: MySql2Database): DB {
-  return new Proxy(mysqlDb as unknown as DB, {
-    get(target, prop: string) {
-      const val = (mysqlDb as any)[prop]
+function wrapMySqlDb(getDb: () => MySql2Database, onError: (err: unknown) => Promise<void>): DB {
+  return new Proxy({} as DB, {
+    get(_target, prop: string | symbol) {
+      const val = (getDb() as any)[prop]
       if (typeof val === "function") {
         return (...args: unknown[]) => {
-          const result = val.apply(mysqlDb, args)
+          const db = getDb()
+          const result = val.apply(db, args)
           if (result !== null && result !== undefined && typeof result === "object") {
-            return wrapQueryBuilder(result)
+            return wrapQueryBuilder(result, onError)
           }
           return result
         }
@@ -523,7 +570,7 @@ export function computePath(connectionString: string): string {
   return connectionString
 }
 
-function parseConnectionString(url: string): mysql.PoolOptions {
+function parseConnectionString(url: string): mysql.ConnectionOptions {
   const parsed = new URL(url)
   return {
     host: parsed.hostname || "127.0.0.1",
@@ -531,19 +578,56 @@ function parseConnectionString(url: string): mysql.PoolOptions {
     user: parsed.username || undefined,
     password: parsed.password || undefined,
     database: parsed.pathname.replace(/^\//, "") || undefined,
-    // Dolt's working set is scoped to the connection session. Pinning the pool
-    // to a single connection guarantees inserts and `dolt_commit` run in the
-    // same session, so the commit actually sees the dirty state.
-    connectionLimit: 1,
   }
 }
 
 export function init(connectionString: string): StorageAdapter {
-  const pool = mysql.createPool(parseConnectionString(connectionString))
-  const mysqlDb = drizzle({ client: pool, logger: drizzleLogger }) as MySql2Database
+  const options = parseConnectionString(connectionString)
+  let connection: Connection | undefined
+  let mysqlDb: MySql2Database | undefined
+  let connecting: Promise<MySql2Database> | undefined
+  let closed = false
+
+  const connect = async (): Promise<MySql2Database> => {
+    if (mysqlDb) return mysqlDb
+    if (connecting) return connecting
+    if (closed) throw new Error("Database connection is closed")
+    connecting = mysql.createConnection(options).then((conn) => {
+      connection = conn
+      mysqlDb = drizzle({ client: conn, logger: drizzleLogger }) as MySql2Database
+      return mysqlDb
+    }).finally(() => {
+      connecting = undefined
+    })
+    return connecting
+  }
+
+  const currentDb = (): MySql2Database => {
+    if (!mysqlDb) throw new Error("Database connection is not ready")
+    return mysqlDb
+  }
+
+  const reconnect = async (err: unknown): Promise<void> => {
+    if (!isProtocolError(err) || closed) return
+    log.warn("reconnecting mysql connection after protocol error", { error: err })
+    const old = connection
+    connection = undefined
+    mysqlDb = undefined
+    old?.destroy()
+    await connect()
+  }
+
+  const execute = async <T>(statement: Parameters<MySql2Database["execute"]>[0]): Promise<T> => {
+    try {
+      return (await (await connect()).execute(statement)) as T
+    } catch (err) {
+      await reconnect(err)
+      throw err
+    }
+  }
 
   const hasCommitInHistory = async (branch: string, commit: string): Promise<boolean> => {
-    const [rows] = await mysqlDb.execute(
+    const [rows] = await execute<[unknown, unknown]>(
       sql`SELECT count(*) FROM dolt_log AS OF ${branch} WHERE commit_hash = ${commit}`,
     )
     const row = (rows as unknown as Record<string, unknown>[])[0]
@@ -551,53 +635,54 @@ export function init(connectionString: string): StorageAdapter {
   }
 
   return {
-    db: wrapMySqlDb(mysqlDb),
-    mysqlDb,
+    db: wrapMySqlDb(currentDb, reconnect),
+    mysqlDb: wrapMySqlDb(currentDb, reconnect),
     path: connectionString,
     migrate: async () => {
-      const conn = await pool.getConnection()
-      try {
-        for (const sql of DDL) {
-          await conn.execute(sql)
-          log.info("query", { sql })
-        }
-      } finally {
-        conn.release()
+      for (const sql of DDL) {
+        await execute(sql)
+        log.info("query", { sql })
       }
     },
-    close: () => pool.end(),
+    close: async () => {
+      closed = true
+      const conn = connection
+      connection = undefined
+      mysqlDb = undefined
+      await conn?.end().catch(() => conn.destroy())
+    },
     currentBranch: async (): Promise<string> => {
-      const [rows] = await mysqlDb.execute(sql`SELECT active_branch()`)
+      const [rows] = await execute<[unknown, unknown]>(sql`SELECT active_branch()`)
       const row = (rows as unknown as Record<string, unknown>[])[0]
       return Object.values(row)[0] as string
     },
     changeBranch: async (name: string): Promise<void> => {
-      await mysqlDb.execute(sql`CALL dolt_checkout(${name})`)
+      await execute(sql`CALL dolt_checkout(${name})`)
     },
     createBranch: async (name: string, startPoint: string | null, force: boolean): Promise<void> => {
       if (!name) throw new Error("branch name must be non-empty")
       if (startPoint && force) {
-        await mysqlDb.execute(sql`CALL dolt_branch('-f', ${name}, ${startPoint})`)
+        await execute(sql`CALL dolt_branch('-f', ${name}, ${startPoint})`)
       } else if (startPoint) {
-        await mysqlDb.execute(sql`CALL dolt_branch(${name}, ${startPoint})`)
+        await execute(sql`CALL dolt_branch(${name}, ${startPoint})`)
       } else if (force) {
-        await mysqlDb.execute(sql`CALL dolt_branch('-f', ${name})`)
+        await execute(sql`CALL dolt_branch('-f', ${name})`)
       } else {
-        await mysqlDb.execute(sql`CALL dolt_branch(${name})`)
+        await execute(sql`CALL dolt_branch(${name})`)
       }
     },
     checkoutNew: async (name: string, force: boolean = false): Promise<void> => {
       if (!name) throw new Error("branch name must be non-empty")
       const flag = force ? "-B" : "-b"
-      await mysqlDb.execute(sql`CALL dolt_checkout(${flag}, ${name})`)
+      await execute(sql`CALL dolt_checkout(${flag}, ${name})`)
     },
     hasBranch: async (name: string): Promise<boolean> => {
-      const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
+      const [rows] = await execute<[unknown, unknown]>(sql`SELECT count(*) FROM dolt_branches WHERE name = ${name}`)
       const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) > 0
     },
     branchHash: async (branch: string): Promise<string> => {
-      const [rows] = await mysqlDb.execute(sql`SELECT hashof(${branch})`)
+      const [rows] = await execute<[unknown, unknown]>(sql`SELECT hashof(${branch})`)
       const row = (rows as unknown as Record<string, unknown>[])[0]
       const value = row ? Object.values(row)[0] : undefined
       if (typeof value !== "string" || value.length === 0) {
@@ -607,7 +692,7 @@ export function init(connectionString: string): StorageAdapter {
     },
     hasCommitInHistory,
     listBranchesWithBase: async (baseBranch: string) => {
-      const [rows] = await mysqlDb.execute(
+      const [rows] = await execute<[unknown, unknown]>(
         sql`SELECT name, hash, latest_commit_message FROM dolt_branches`,
       )
       const branches = rows as unknown as Array<{ name: string; hash: string; latest_commit_message: string }>
@@ -652,7 +737,7 @@ export function init(connectionString: string): StorageAdapter {
       }> = []
       for (const table of tables) {
         try {
-          const [rows] = await mysqlDb.execute(
+          const [rows] = await execute<[unknown, unknown]>(
             sql`SELECT * FROM DOLT_DIFF_STAT(${param1}, ${param2}, ${table})`,
           )
           const arr = rows as unknown as Array<Record<string, unknown>>
@@ -669,7 +754,7 @@ export function init(connectionString: string): StorageAdapter {
             dataBytesModifiedDelta: 0,
           }
           if (tablesWithData.has(table)) {
-            const [aggRows] = await mysqlDb.execute(
+            const [aggRows] = await execute<[unknown, unknown]>(
               sql`
                 SELECT
                   COALESCE(SUM(LENGTH(from_data)), 0) AS old_bytes,
@@ -717,7 +802,7 @@ export function init(connectionString: string): StorageAdapter {
     },
     executeRaw: async (statement: string) => {
       try {
-        const [result] = await mysqlDb.execute(sql.raw(statement))
+        const [result] = await execute<[unknown, unknown]>(sql.raw(statement))
         if (Array.isArray(result)) {
           const rows = result as Array<Record<string, unknown>>
           const columns = rows.length > 0 ? Object.keys(rows[0]) : []
@@ -739,7 +824,7 @@ export function init(connectionString: string): StorageAdapter {
       }
     },
     getCommitLog: async () => {
-      const [rows] = await mysqlDb.execute(
+      const [rows] = await execute<[unknown, unknown]>(
         sql`SELECT commit_hash, date, message FROM dolt_log ORDER BY commit_order desc`,
       )
       return (rows as unknown as Array<{ commit_hash: string; date: Date; message: string }>).map((row) => ({
@@ -750,32 +835,32 @@ export function init(connectionString: string): StorageAdapter {
     },
     commit: async (message: string): Promise<void> => {
       try {
-        await mysqlDb.execute(sql`CALL dolt_commit('-Am', ${message})`)
+        await execute(sql`CALL dolt_commit('-Am', ${message})`)
       } catch (e) {
         throw new Error(unwrapSqlError(e))
       }
     },
     commitEmpty: async (message: string): Promise<void> => {
       try {
-        await mysqlDb.execute(sql`CALL dolt_commit('--allow-empty', '-m', ${message})`)
+        await execute(sql`CALL dolt_commit('--allow-empty', '-m', ${message})`)
       } catch (e) {
         throw new Error(unwrapSqlError(e))
       }
     },
     isDirty: async (): Promise<boolean> => {
-      const [rows] = await mysqlDb.execute(sql`SELECT count(*) FROM dolt_diff WHERE commit_hash = 'WORKING'`)
+      const [rows] = await execute<[unknown, unknown]>(sql`SELECT count(*) FROM dolt_diff WHERE commit_hash = 'WORKING'`)
       const row = (rows as unknown as Record<string, unknown>[])[0]
       return Number(Object.values(row)[0]) !== 0
     },
     merge: async (branch: string, squash: boolean = false): Promise<void> => {
       if (squash) {
-        await mysqlDb.execute(sql`CALL dolt_merge(${branch}, '--squash')`)
+        await execute(sql`CALL dolt_merge(${branch}, '--squash')`)
       } else {
-        await mysqlDb.execute(sql`CALL dolt_merge(${branch})`)
+        await execute(sql`CALL dolt_merge(${branch})`)
       }
     },
     reset: async (ref: string): Promise<void> => {
-      await mysqlDb.execute(sql`CALL dolt_reset('--hard', ${ref})`)
+      await execute(sql`CALL dolt_reset('--hard', ${ref})`)
     },
   }
 }
