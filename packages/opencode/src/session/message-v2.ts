@@ -2,6 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/core/util/error"
+import * as Log from "@opencode-ai/core/util/log"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "@/snapshot"
@@ -37,6 +38,8 @@ interface FetchDecompressionError extends Error {
 
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached image(s) from tool result:"
 export { isMedia }
+
+const log = Log.create({ service: "message-v2" })
 
 export const OutputLengthError = namedSchemaError("MessageOutputLengthError", {})
 export const AbortedError = namedSchemaError("MessageAbortedError", { message: Schema.String })
@@ -725,7 +728,27 @@ async function hydrate(rows: (typeof MessageTable.$inferSelect)[], asOf?: string
           .orderBy(PartTable.message_id, PartTable.id),
         asOf,
       ),
-    )
+    ).catch(async (err) => {
+      if (!Database.isReadQueryError(err)) throw err
+      log.warn("failed to hydrate message parts in batch", { messageIDs: ids, error: err })
+      const result: (typeof PartTable.$inferSelect)[] = []
+      for (const id of ids) {
+        try {
+          result.push(
+            ...(await Database.useAsync((db) =>
+              Database.selectAsOf<typeof PartTable.$inferSelect>(
+                db.select().from(PartTable).where(eq(PartTable.message_id, id)).orderBy(PartTable.id),
+                asOf,
+              ),
+            )),
+          )
+        } catch (inner) {
+          if (!Database.isReadQueryError(inner)) throw inner
+          log.warn("skipping message parts after read failure", { messageID: id, error: inner })
+        }
+      }
+      return result
+    })
     for (const row of partRows) {
       const next = part(row)
       const list = partByMessage.get(row.message_id)
