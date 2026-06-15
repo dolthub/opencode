@@ -10,10 +10,27 @@ import nextProjectors from "./projectors-next"
 
 const log = Log.create({ service: "session.projector" })
 
+function errorFields(err: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof err !== "object" || err === null || seen.has(err)) return []
+  seen.add(err)
+  const record = err as Record<string, unknown>
+  return [
+    record.code,
+    record.errno,
+    record.sqlState,
+    record.sqlMessage,
+    record.message,
+    ...errorFields(record.cause, seen),
+  ]
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map(String)
+}
+
 function foreign(err: unknown) {
-  if (typeof err !== "object" || err === null) return false
-  if ("code" in err && err.code === "SQLITE_CONSTRAINT_FOREIGNKEY") return true
-  return "message" in err && typeof err.message === "string" && err.message.includes("FOREIGN KEY constraint failed")
+  return errorFields(err).some((value) => {
+    if (["SQLITE_CONSTRAINT_FOREIGNKEY", "ER_NO_REFERENCED_ROW", "ER_NO_REFERENCED_ROW_2"].includes(value)) return true
+    return /foreign key constraint failed|foreign key constraint fails|foreign key violation|cannot add or update a child row|referenced row/i.test(value)
+  })
 }
 
 export type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> | null } : T
